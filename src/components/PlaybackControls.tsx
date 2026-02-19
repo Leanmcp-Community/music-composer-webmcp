@@ -9,9 +9,11 @@ interface PlaybackControlsProps {
   onStop: () => void;
   onExport: () => void;
   onExportMp3: () => void;
+  onExportStems: () => void;
   onShare: () => void;
   shareUrl: string | null;
   isExportingMp3: boolean;
+  isExportingStems: boolean;
   onStopAgent?: () => void;
 }
 
@@ -23,9 +25,11 @@ export function PlaybackControls({
   onStop,
   onExport,
   onExportMp3,
+  onExportStems,
   onShare,
   shareUrl,
   isExportingMp3,
+  isExportingStems,
   onStopAgent
 }: PlaybackControlsProps) {
   const hasNotes = composition.notes.length > 0;
@@ -106,6 +110,27 @@ export function PlaybackControls({
             </svg>
           )}
           <span>{isExportingMp3 ? "Rendering..." : "MP3"}</span>
+        </button>
+
+        <button
+          className="playback-btn secondary-btn"
+          onClick={onExportStems}
+          disabled={!hasNotes || isExportingStems}
+          title="Export each track as a separate WAV stem"
+        >
+          {isExportingStems ? (
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="8 4">
+                <animateTransform attributeName="transform" type="rotate" from="0 7 7" to="360 7 7" dur="0.8s" repeatCount="indefinite" />
+              </circle>
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+              <path d="M2 3h10M2 7h7M2 11h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+              <path d="M10 8v4M8 10l2 2 2-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" fill="none" />
+            </svg>
+          )}
+          <span>{isExportingStems ? "Rendering..." : "Stems"}</span>
         </button>
 
         <button

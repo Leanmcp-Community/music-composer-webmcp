@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useRef, forwardRef } from "react";
 import type { CompositionState, MusicNote } from "../types";
 import { getTrackColor, pitchToMidi } from "../runtime/audioEngine";
 
@@ -69,6 +69,16 @@ function drawKeyboard(
   }
   ctx.fillStyle = "rgba(100,100,180,0.5)";
   ctx.fillRect(KEYBOARD_WIDTH - 1, 0, 1, CANVAS_HEIGHT);
+}
+
+function computeWaterfallOffsetY(notes: MusicNote[], canvasHeight: number): number {
+  if (notes.length === 0) return 0;
+  const midis = notes.map((n) => pitchToMidi(n.pitch)).sort((a, b) => a - b);
+  const medianMidi = midis[Math.floor(midis.length / 2)];
+  const noteY = midiToRow(medianMidi) * ROW_HEIGHT + ROW_HEIGHT / 2;
+  const offset = canvasHeight / 2 - noteY;
+  const minOffset = canvasHeight - CANVAS_HEIGHT;
+  return Math.min(0, Math.max(minOffset, offset));
 }
 
 function drawWaterfallBackground(ctx: CanvasRenderingContext2D, width: number): void {
@@ -229,7 +239,11 @@ interface PianoRollProps {
   onToggleMute: (trackName: string) => void;
 }
 
-export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute }: PianoRollProps) {
+export interface PianoRollHandle {
+  centerOnNotes: () => void;
+}
+
+export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute }: PianoRollProps, ref) {
   const waterfallCanvasRef = useRef<HTMLCanvasElement>(null);
   const gridCanvasRef = useRef<HTMLCanvasElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -258,6 +272,10 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     sc.scrollTop = Math.max(0, Math.min(CANVAS_HEIGHT - sc.clientHeight, targetY));
   }, []);
 
+  useImperativeHandle(ref, () => ({
+    centerOnNotes: () => centerOnNotes(compositionRef.current.notes),
+  }), [centerOnNotes]);
+
   const totalBeats = Math.max(composition.totalBeats + 8, MIN_CANVAS_BEATS);
   const gridWidth = totalBeats * BEAT_WIDTH;
 
@@ -283,15 +301,19 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     ctx.clearRect(0, 0, width, height);
 
     const gridW = width - KEYBOARD_WIDTH;
+    const notes = compositionRef.current.notes;
+    const offsetY = computeWaterfallOffsetY(notes, height);
 
     ctx.save();
-    ctx.translate(KEYBOARD_WIDTH, 0);
+    ctx.translate(KEYBOARD_WIDTH, offsetY);
     drawWaterfallBackground(ctx, gridW);
-    drawWaterfallNotes(ctx, compositionRef.current.notes, compositionRef.current.tracks, playheadRef.current, gridW, mutedTracksRef.current);
+    drawWaterfallNotes(ctx, notes, compositionRef.current.tracks, playheadRef.current, gridW, mutedTracksRef.current);
     ctx.restore();
 
+    ctx.save();
+    ctx.translate(0, offsetY);
     drawKeyboard(ctx, activeNotesRef.current, flashMapRef.current);
-    void height;
+    ctx.restore();
   }, []);
 
   const renderStatic = useCallback(() => {
@@ -337,12 +359,6 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     if (!isPlaying) renderWaterfall();
   }, [activeNotes, isPlaying, renderWaterfall, mutedTracks]);
 
-  useEffect(() => {
-    if (isPlaying) {
-      centeredRef.current = false;
-      centerOnNotes(compositionRef.current.notes);
-    }
-  }, [isPlaying, centerOnNotes]);
 
   useEffect(() => {
     const canvas = waterfallCanvasRef.current;
@@ -476,4 +492,4 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
       </div>
     </div>
   );
-}
+});

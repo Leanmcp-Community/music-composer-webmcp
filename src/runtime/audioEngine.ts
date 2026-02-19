@@ -1210,12 +1210,37 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
   return new Blob([arrayBuffer], { type: "audio/wav" });
 }
 
-export async function exportMp3(composition: CompositionState): Promise<Blob> {
+async function renderToBuffer(
+  composition: CompositionState,
+  trackFilter?: Set<string>
+): Promise<AudioBuffer> {
   const secondsPerBeat = 60 / composition.bpm;
   const totalDuration = composition.totalBeats * secondsPerBeat + 2.5;
   const sampleRate = 44100;
   const numSamples = Math.ceil(sampleRate * totalDuration);
   const offlineCtx = new OfflineAudioContext(2, numSamples, sampleRate);
+  const ctx = offlineCtx as unknown as AudioContext;
+
+  const tracksToRender = trackFilter
+    ? Object.fromEntries(Object.entries(composition.tracks).filter(([k]) => trackFilter.has(k)))
+    : composition.tracks;
+
+  const notesToRender = trackFilter
+    ? composition.notes.filter((n) => trackFilter.has(n.track))
+    : composition.notes;
+
+  const usedInstruments = new Set(
+    notesToRender
+      .map((n) => composition.tracks[n.track]?.instrument)
+      .filter((i): i is InstrumentName => !!i && !!GM_INSTRUMENT_MAP[i])
+  );
+
+  const localPlayers = new Map<string, SoundfontPlayerInstance>();
+  await Promise.all([...usedInstruments].map(async (inst) => {
+    const gmName = GM_INSTRUMENT_MAP[inst]!;
+    const player = await Soundfont.instrument(ctx, gmName, { soundfont: "MusyngKite", format: "mp3" });
+    localPlayers.set(inst, player);
+  }));
 
   const master = offlineCtx.createGain();
   master.gain.value = 0.72;
@@ -1225,19 +1250,15 @@ export async function exportMp3(composition: CompositionState): Promise<Blob> {
   reverbBus.output.connect(master);
 
   const trackChains = new Map<string, GainNode>();
-  for (const [name, track] of Object.entries(composition.tracks)) {
+  for (const [name, track] of Object.entries(tracksToRender)) {
     const g = offlineCtx.createGain();
     g.gain.value = track.volume ?? 1;
     const p = offlineCtx.createStereoPanner();
     p.pan.value = track.pan ?? 0;
 
     let postGain: AudioNode = g;
-    if (track.distortion) {
-      postGain = applyDistortion(offlineCtx as unknown as AudioContext, g, track.distortion);
-    }
-    if (track.delayParams) {
-      postGain = applyDelay(offlineCtx as unknown as AudioContext, postGain, track.delayParams);
-    }
+    if (track.distortion) postGain = applyDistortion(ctx, g, track.distortion);
+    if (track.delayParams) postGain = applyDelay(ctx, postGain, track.delayParams);
     postGain.connect(p);
     p.connect(master);
 
@@ -1251,30 +1272,38 @@ export async function exportMp3(composition: CompositionState): Promise<Blob> {
     trackChains.set(name, g);
   }
 
-  for (const note of composition.notes) {
+  for (const note of notesToRender) {
     const track = composition.tracks[note.track];
     if (!track) continue;
-
     const dest = trackChains.get(note.track) ?? master;
     const noteStart = note.beat * secondsPerBeat + 0.05;
     const noteDuration = note.duration * secondsPerBeat;
-
-    await synthesizeNote(offlineCtx as unknown as AudioContext, dest, {
-      pitch: note.pitch,
-      frequency: pitchToFrequency(note.pitch),
-      startTime: noteStart,
-      duration: noteDuration,
-      velocity: note.velocity,
-      instrument: track.instrument,
-      synthParams: track.synthParams,
-      lfoParams: track.lfoParams
-    });
+    const player = localPlayers.get(track.instrument);
+    if (player) {
+      const midiNote = pitchToMidi(note.pitch);
+      const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
+      player.connect(dest);
+      player.play(midiNote, noteStart, { gain: gainVal, duration: Math.max(0.05, noteDuration) });
+    } else {
+      synthesizeNoteSync(ctx, dest, {
+        pitch: note.pitch,
+        frequency: pitchToFrequency(note.pitch),
+        startTime: noteStart,
+        duration: noteDuration,
+        velocity: note.velocity,
+        instrument: track.instrument,
+        synthParams: track.synthParams,
+        lfoParams: track.lfoParams
+      });
+    }
   }
 
-  const rendered = await offlineCtx.startRendering();
+  return offlineCtx.startRendering();
+}
 
+function bufferToMp3(rendered: AudioBuffer): Blob {
+  const sampleRate = rendered.sampleRate;
   const encoder = new Mp3Encoder(2, sampleRate, 320);
-
   const left = rendered.getChannelData(0);
   const right = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : left;
 
@@ -1288,29 +1317,44 @@ export async function exportMp3(composition: CompositionState): Promise<Blob> {
 
   const leftInt = toInt16(left);
   const rightInt = toInt16(right);
-
   const parts: ArrayBuffer[] = [];
   const blockSize = 1152;
 
   for (let i = 0; i < leftInt.length; i += blockSize) {
-    const leftChunk = leftInt.subarray(i, i + blockSize);
-    const rightChunk = rightInt.subarray(i, i + blockSize);
-    const encoded = encoder.encodeBuffer(leftChunk, rightChunk);
+    const encoded = encoder.encodeBuffer(leftInt.subarray(i, i + blockSize), rightInt.subarray(i, i + blockSize));
     if (encoded.length > 0) {
       const buf = new ArrayBuffer(encoded.length);
       new Int8Array(buf).set(encoded);
       parts.push(buf);
     }
   }
-
   const flushed = encoder.flush();
   if (flushed.length > 0) {
     const buf = new ArrayBuffer(flushed.length);
     new Int8Array(buf).set(flushed);
     parts.push(buf);
   }
-
   return new Blob(parts, { type: "audio/mpeg" });
+}
+
+export async function exportMp3(composition: CompositionState): Promise<Blob> {
+  const rendered = await renderToBuffer(composition);
+  return bufferToMp3(rendered);
+}
+
+export async function exportStems(
+  composition: CompositionState,
+  trackNames?: string[]
+): Promise<Array<{ name: string; blob: Blob }>> {
+  const tracks = trackNames ?? Object.keys(composition.tracks);
+  const results = await Promise.all(
+    tracks.map(async (trackName) => {
+      const filter = new Set([trackName]);
+      const buffer = await renderToBuffer(composition, filter);
+      return { name: trackName, blob: audioBufferToWav(buffer) };
+    })
+  );
+  return results;
 }
 
 export const TRACK_COLORS: Record<string, string> = {

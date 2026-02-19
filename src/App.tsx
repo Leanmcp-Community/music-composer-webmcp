@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { PianoRoll } from "./components/PianoRoll";
+import { PianoRoll, type PianoRollHandle } from "./components/PianoRoll";
 import { PlaybackControls } from "./components/PlaybackControls";
-import { AudioEngine, exportMp3 } from "./runtime/audioEngine";
+import { AudioEngine, exportMp3, exportStems } from "./runtime/audioEngine";
 import { AgentEngine } from "./runtime/agentEngine";
 import { createMusicTools, createInitialCompositionState } from "./runtime/musicToolRegistry";
 import { ReplayEngine } from "./runtime/replayEngine";
@@ -205,8 +205,10 @@ export default function App() {
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [isExportingMp3, setIsExportingMp3] = useState(false);
+  const [isExportingStems, setIsExportingStems] = useState(false);
   const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
   const mutedTracksRef = useRef<Set<string>>(new Set());
+  const pianoRollRef = useRef<PianoRollHandle>(null);
   const tracksWithNotesRef = useRef<Set<string>>(new Set());
   const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAgentRunningRef = useRef(false);
@@ -379,6 +381,7 @@ export default function App() {
   const handlePlay = useCallback(() => {
     const comp = compositionRef.current;
     if (!comp.notes.length) return;
+    pianoRollRef.current?.centerOnNotes();
     setIsPlaying(true);
     setPlayheadBeat(0);
     audioEngine.play(comp, mutedTracksRef.current);
@@ -427,6 +430,35 @@ export default function App() {
     setShareUrl(url);
     setStatusMessage("Share link copied");
     setTimeout(() => setShareUrl(null), 3000);
+  }, []);
+
+  const handleExportStems = useCallback(async () => {
+    const comp = compositionRef.current;
+    if (!comp.notes.length) {
+      setStatusMessage("No composition to export.");
+      return;
+    }
+    setIsExportingStems(true);
+    setStatusMessage("Rendering stems...");
+    try {
+      const stems = await exportStems(comp);
+      for (const stem of stems) {
+        const url = URL.createObjectURL(stem.blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${stem.name}-${Date.now()}.wav`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
+      setStatusMessage(`${stems.length} stem${stems.length !== 1 ? "s" : ""} exported`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMessage(`Stem export failed: ${msg}`);
+    } finally {
+      setIsExportingStems(false);
+    }
   }, []);
 
   const handleExportMp3 = useCallback(async () => {
@@ -488,6 +520,7 @@ export default function App() {
         </div>
 
         <PianoRoll
+          ref={pianoRollRef}
           composition={composition}
           playheadBeat={playheadBeat}
           latestNoteId={latestNoteId}
@@ -505,9 +538,11 @@ export default function App() {
           onStop={handleStop}
           onExport={handleExport}
           onExportMp3={handleExportMp3}
+          onExportStems={handleExportStems}
           onShare={handleShare}
           shareUrl={shareUrl}
           isExportingMp3={isExportingMp3}
+          isExportingStems={isExportingStems}
           onStopAgent={stopAgent}
         />
       </section>
