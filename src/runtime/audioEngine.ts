@@ -260,67 +260,23 @@ interface ScheduledNote {
   lfoParams?: LfoParams;
 }
 
-let connectedPlayers = new WeakSet<object>();
 
 function synthesizeNoteSync(
   ctx: AudioContext,
-  master: GainNode,
-  note: ScheduledNote
-): void {
-  const gmName = GM_INSTRUMENT_MAP[note.instrument];
-  if (gmName) {
-    const key = `${ctx === (globalThis as Record<string, unknown>).__sfCtx ? "live" : "offline"}_${gmName}`;
-    const cached = soundfontCache.get(key);
-    if (cached) {
-      void cached.then((player) => {
-        if (ctx.state === "closed") return;
-        const routeKey = player as unknown as object;
-        if (!connectedPlayers.has(routeKey)) {
-          player.connect(master);
-          connectedPlayers.add(routeKey);
-        }
-        const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
-        const durSecs = Math.max(0.05, note.duration);
-        player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs });
-      });
-      return;
-    }
-  }
-  synthesizeNoteOsc(ctx, master, note);
-}
-
-async function synthesizeNote(
-  ctx: AudioContext,
-  master: GainNode,
+  dest: GainNode,
   note: ScheduledNote,
-  isCancelled?: () => boolean
-): Promise<void> {
-  const { frequency, startTime, duration, velocity, instrument, synthParams: sp, lfoParams: lfo } = note;
-  const midiNote = pitchToMidi(note.pitch ?? "");
-
-  if (GM_INSTRUMENT_MAP[instrument]) {
-    try {
-      const player = await getSoundfontPlayer(ctx, instrument);
-      if (isCancelled?.()) return;
-      if (player && ctx.state !== "closed") {
-        const routeKey = player as unknown as object;
-        if (!connectedPlayers.has(routeKey)) {
-          player.connect(master);
-          connectedPlayers.add(routeKey);
-        }
-        const gainVal = Math.max(0.01, Math.min(1, velocity / 127));
-        const durSecs = Math.max(0.05, duration);
-        player.play(midiNote, startTime, { gain: gainVal, duration: durSecs });
-        return;
-      }
-    } catch {
-      /* fall through to oscillator synth */
-    }
+  player?: SoundfontPlayerInstance
+): void {
+  if (player) {
+    if (ctx.state === "closed") return;
+    const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
+    const durSecs = Math.max(0.05, note.duration);
+    player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs });
+    return;
   }
-  if (isCancelled?.()) return;
-
-  synthesizeNoteOsc(ctx, master, note);
+  synthesizeNoteOsc(ctx, dest, note);
 }
+
 
 function synthesizeNoteOsc(
   ctx: AudioContext,
@@ -907,6 +863,8 @@ function stopAllSoundfontVoices(): void {
   }
 }
 
+type TrackSoundfontPlayers = Map<string, SoundfontPlayerInstance>;
+
 const SCHEDULER_LOOKAHEAD = 0.35;
 const SCHEDULER_INTERVAL = 40;
 
@@ -947,6 +905,8 @@ export class AudioEngine {
     return { ctx: this.ctx, master: this.master!, reverbBus: this.reverbBus! };
   }
 
+  private trackSoundfontPlayers: TrackSoundfontPlayers = new Map();
+
   private cleanupPlayback(): void {
     if (this.schedulerTimer !== null) {
       clearTimeout(this.schedulerTimer);
@@ -963,7 +923,7 @@ export class AudioEngine {
     this.playTrackChains.clear();
     this.trackGains.clear();
     this.trackBaseVolumes.clear();
-    connectedPlayers = new WeakSet<object>();
+    this.trackSoundfontPlayers.clear();
 
     if (this.ctx && this.ctx.state !== "closed") {
       void this.ctx.suspend();
@@ -1058,6 +1018,31 @@ export class AudioEngine {
     }
 
     this.playTrackChains = trackChains;
+
+    // Create one soundfont player instance per track (not shared per instrument).
+    // Soundfont-player.connect() is additive — sharing a player across tracks
+    // means all tracks receive all voices. Per-track instances give isolated routing.
+    // Audio buffers are browser-cached (same URL), so only the JS wrapper is duplicated.
+    this.trackSoundfontPlayers.clear();
+    const trackPlayerPromises: Promise<void>[] = [];
+    for (const [trackName, track] of Object.entries(composition.tracks)) {
+      const gmName = GM_INSTRUMENT_MAP[track.instrument];
+      if (!gmName) continue;
+      const chain = trackChains.get(trackName);
+      if (!chain) continue;
+      const dest = chain.gain;
+      const p = Soundfont.instrument(ctx, gmName, { soundfont: "MusyngKite", format: "mp3" })
+        .then((player) => {
+          if (!this.isPlaying || ctx.state === "closed") return;
+          player.connect(dest);
+          this.trackSoundfontPlayers.set(trackName, player);
+        })
+        .catch(() => { /* fall back to oscillator */ });
+      trackPlayerPromises.push(p);
+    }
+    await Promise.all(trackPlayerPromises);
+    if (!this.isPlaying) return;
+
     const thisPlayId = ++this.playId;
 
     this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
@@ -1065,6 +1050,7 @@ export class AudioEngine {
 
     const scheduleChunk = () => {
       if (!this.isPlaying || this.playId !== thisPlayId || !this.ctx) return;
+      const currentMuted = this.lastMutedTracks;
       const lookAheadEnd = this.ctx.currentTime + SCHEDULER_LOOKAHEAD;
       while (this.schedulerIndex < this.sortedNotes.length) {
         const mn = this.sortedNotes[this.schedulerIndex];
@@ -1072,9 +1058,10 @@ export class AudioEngine {
         if (noteStartTime > lookAheadEnd) break;
 
         const track = composition.tracks[mn.track];
-        if (track) {
+        if (track && !(currentMuted?.has(mn.track))) {
           const chain = trackChains.get(mn.track);
           const dest = chain ? chain.gain : master;
+          const sfPlayer = this.trackSoundfontPlayers.get(mn.track);
           synthesizeNoteSync(ctx, dest, {
             pitch: mn.pitch,
             frequency: pitchToFrequency(mn.pitch),
@@ -1084,7 +1071,7 @@ export class AudioEngine {
             instrument: track.instrument,
             synthParams: track.synthParams,
             lfoParams: track.lfoParams
-          });
+          }, sfPlayer);
         }
         this.schedulerIndex++;
       }
@@ -1107,13 +1094,14 @@ export class AudioEngine {
 
       if (this.onActiveNotesUpdate && this.sortedNotes.length > 0) {
         const active = new Set<number>();
+        const currentMuted = this.lastMutedTracks;
         while (noteSearchStart < this.sortedNotes.length && this.sortedNotes[noteSearchStart].beat + this.sortedNotes[noteSearchStart].duration < currentBeat) {
           noteSearchStart++;
         }
         for (let i = noteSearchStart; i < this.sortedNotes.length; i++) {
           const n = this.sortedNotes[i];
           if (n.beat > currentBeat) break;
-          if (currentBeat < n.beat + n.duration) {
+          if (currentBeat < n.beat + n.duration && !(currentMuted?.has(n.track))) {
             active.add(pitchToMidi(n.pitch));
           }
         }
@@ -1142,6 +1130,7 @@ export class AudioEngine {
   }
 
   updateMutedTracks(mutedTracks: Set<string>): void {
+    this.lastMutedTracks = mutedTracks;
     for (const [name, gainNode] of this.trackGains) {
       const baseVol = this.trackBaseVolumes.get(name) ?? 1;
       gainNode.gain.value = mutedTracks.has(name) ? 0 : baseVol;
