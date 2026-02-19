@@ -95,6 +95,9 @@ export default function App() {
   const [isExportingMp3, setIsExportingMp3] = useState(false);
   const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
   const mutedTracksRef = useRef<Set<string>>(new Set());
+  const tracksWithNotesRef = useRef<Set<string>>(new Set());
+  const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isAgentRunningRef = useRef(false);
 
   useEffect(() => {
     if (initializedRef.current) return;
@@ -109,14 +112,44 @@ export default function App() {
       (note: MusicNote) => {
         const c = compositionRef.current;
         setLatestNoteId(note.id);
-        setComposition({
+        const snap = {
           bpm: c.bpm,
           timeSignatureNumerator: c.timeSignatureNumerator,
           timeSignatureDenominator: c.timeSignatureDenominator,
           tracks: { ...c.tracks },
           notes: c.notes.slice(),
           totalBeats: c.totalBeats
-        });
+        };
+        setComposition(snap);
+
+        if (isAgentRunningRef.current && c.totalBeats >= 2) {
+          const prevCount = tracksWithNotesRef.current.size;
+          const newTracksWithNotes = new Set<string>();
+          for (const n of c.notes) newTracksWithNotes.add(n.track);
+          const newCount = newTracksWithNotes.size;
+          tracksWithNotesRef.current = newTracksWithNotes;
+
+          if (newCount > prevCount || (prevCount === 0 && newCount === 1)) {
+            if (layeredRestartTimerRef.current) clearTimeout(layeredRestartTimerRef.current);
+            layeredRestartTimerRef.current = setTimeout(() => {
+              const latest = compositionRef.current;
+              audioEngine.play(
+                {
+                  bpm: latest.bpm,
+                  timeSignatureNumerator: latest.timeSignatureNumerator,
+                  timeSignatureDenominator: latest.timeSignatureDenominator,
+                  tracks: { ...latest.tracks },
+                  notes: latest.notes.slice(),
+                  totalBeats: latest.totalBeats
+                },
+                mutedTracksRef.current,
+                { loop: true }
+              );
+              setIsPlaying(true);
+              setPlayheadBeat(0);
+            }, 350);
+          }
+        }
       },
       () => {
         const c = compositionRef.current;
@@ -202,22 +235,31 @@ export default function App() {
     setPlayheadBeat(-1);
     setIsPlaying(false);
     audioEngine.stop();
+    tracksWithNotesRef.current = new Set();
+    if (layeredRestartTimerRef.current) clearTimeout(layeredRestartTimerRef.current);
+    isAgentRunningRef.current = true;
 
     try {
-      setStatusMessage("Composing...");
+      setStatusMessage("Loading instruments...");
+      await audioEngine.preloadSoundfonts();
+      setStatusMessage("Composing — playback starts automatically...");
       await agentSingleton.run(config, {
         onRunStateChange: (running) => {
-          setStatusMessage(running ? "Agent composing..." : "Composition complete");
+          isAgentRunningRef.current = running;
+          if (!running) {
+            setStatusMessage("Composition complete — looping");
+          }
         },
         onScene: (scene) => {
           runtimeSingleton.setScene(scene);
         }
       });
-      setStatusMessage("Composition ready — press Play");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       runtimeSingleton.log("Agent failed", "error", message);
       setStatusMessage(`Run failed: ${message}`);
+    } finally {
+      isAgentRunningRef.current = false;
     }
   };
 
@@ -377,6 +419,7 @@ export default function App() {
           onShare={handleShare}
           shareUrl={shareUrl}
           isExportingMp3={isExportingMp3}
+          onStopAgent={stopAgent}
         />
       </section>
 

@@ -1,5 +1,57 @@
 import { Mp3Encoder } from "@breezystack/lamejs";
-import type { CompositionState, InstrumentName, MusicNote, MusicTrack, SynthParams } from "../types";
+import Soundfont from "soundfont-player";
+import type { CompositionState, DelayParams, DistortionParams, DistortionType, InstrumentName, LfoParams, MusicNote, MusicTrack, SynthParams } from "../types";
+
+const GM_INSTRUMENT_MAP: Partial<Record<InstrumentName, string>> = {
+  piano:          "acoustic_grand_piano",
+  electric_piano: "electric_piano_1",
+  strings:        "string_ensemble_1",
+  pad:            "pad_2_warm",
+  bass:           "electric_bass_finger",
+  guitar:         "acoustic_guitar_nylon",
+  pluck:          "pizzicato_strings",
+  marimba:        "marimba",
+  organ:          "rock_organ",
+  flute:          "flute",
+  bell:           "tubular_bells",
+  synth_lead:     "lead_2_sawtooth",
+};
+
+const ALL_SAMPLED_INSTRUMENTS = Object.keys(GM_INSTRUMENT_MAP) as InstrumentName[];
+
+type SoundfontPlayerInstance = Awaited<ReturnType<typeof Soundfont.instrument>>;
+
+const soundfontCache = new Map<string, Promise<SoundfontPlayerInstance>>();
+
+function getSoundfontPlayer(
+  ctx: AudioContext | OfflineAudioContext,
+  instrumentName: InstrumentName
+): Promise<SoundfontPlayerInstance> | null {
+  const gmName = GM_INSTRUMENT_MAP[instrumentName];
+  if (!gmName) return null;
+  const key = `${ctx === (globalThis as Record<string, unknown>).__sfCtx ? "live" : "offline"}_${gmName}`;
+  if (!soundfontCache.has(key)) {
+    soundfontCache.set(
+      key,
+      Soundfont.instrument(ctx as AudioContext, gmName, { soundfont: "MusyngKite", format: "mp3" })
+    );
+  }
+  return soundfontCache.get(key)!;
+}
+
+export async function preloadAllInstruments(ctx: AudioContext): Promise<void> {
+  (globalThis as Record<string, unknown>).__sfCtx = ctx;
+  await Promise.all(
+    ALL_SAMPLED_INSTRUMENTS.map((name) => {
+      const gmName = GM_INSTRUMENT_MAP[name]!;
+      const key = `live_${gmName}`;
+      if (!soundfontCache.has(key)) {
+        soundfontCache.set(key, Soundfont.instrument(ctx, gmName, { soundfont: "MusyngKite", format: "mp3" }));
+      }
+      return soundfontCache.get(key)!;
+    })
+  );
+}
 
 const MIDI_NOTE_NAMES = [
   "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
@@ -92,21 +144,172 @@ function createReverb(ctx: AudioContext | OfflineAudioContext, decayTime = 1.8):
   return { input, output };
 }
 
+function makeDistortionCurve(type: DistortionType, drive: number): Float32Array {
+  const n = 512;
+  const curve = new Float32Array(n);
+  const d = Math.max(0.001, Math.min(1, drive));
+
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / n - 1;
+    switch (type) {
+      case "overdrive": {
+        const k = d * 200;
+        curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x));
+        break;
+      }
+      case "saturation": {
+        const k = d * 50;
+        curve[i] = Math.tanh(k * x) / Math.tanh(k);
+        break;
+      }
+      case "hard_clip": {
+        const threshold = 1 - d * 0.85;
+        curve[i] = Math.max(-threshold, Math.min(threshold, x)) / threshold;
+        break;
+      }
+      case "fuzz": {
+        const k = d * 500 + 1;
+        const sign = x < 0 ? -1 : 1;
+        curve[i] = sign * (1 - Math.exp(-Math.abs(x) * k));
+        break;
+      }
+      case "bitcrush": {
+        const bits = Math.max(1, Math.round(16 - d * 14));
+        const step = Math.pow(2, -(bits - 1));
+        curve[i] = step * Math.floor(x / step + 0.5);
+        break;
+      }
+    }
+  }
+  return curve;
+}
+
+function applyDistortion(
+  ctx: AudioContext,
+  input: AudioNode,
+  params: DistortionParams
+): AudioNode {
+  const curve = makeDistortionCurve(params.type, params.drive);
+
+  const shaper = ctx.createWaveShaper();
+  shaper.curve = curve as Float32Array<ArrayBuffer>;
+  shaper.oversample = "4x";
+
+  const dryGain = ctx.createGain();
+  const wetGain = ctx.createGain();
+  const outputGain = ctx.createGain();
+
+  const wet = Math.max(0, Math.min(1, params.mix));
+  dryGain.gain.value = 1 - wet;
+  wetGain.gain.value = wet;
+  outputGain.gain.value = Math.max(0, Math.min(2, params.outputGain));
+
+  input.connect(dryGain);
+  input.connect(shaper);
+  shaper.connect(wetGain);
+  dryGain.connect(outputGain);
+  wetGain.connect(outputGain);
+
+  return outputGain;
+}
+
+function applyDelay(
+  ctx: AudioContext,
+  input: AudioNode,
+  params: DelayParams
+): AudioNode {
+  const delayTime = Math.max(0.01, Math.min(1.0, params.time));
+  const feedback = Math.max(0, Math.min(0.85, params.feedback));
+  const wet = Math.max(0, Math.min(1, params.mix));
+
+  const delay = ctx.createDelay(1.1);
+  delay.delayTime.value = delayTime;
+
+  const fbGain = ctx.createGain();
+  fbGain.gain.value = feedback;
+
+  const dryGain = ctx.createGain();
+  dryGain.gain.value = 1 - wet;
+
+  const wetGain = ctx.createGain();
+  wetGain.gain.value = wet;
+
+  const output = ctx.createGain();
+  output.gain.value = 1;
+
+  delay.connect(fbGain);
+  fbGain.connect(delay);
+
+  input.connect(dryGain);
+  input.connect(delay);
+  delay.connect(wetGain);
+  dryGain.connect(output);
+  wetGain.connect(output);
+
+  return output;
+}
+
 interface ScheduledNote {
+  pitch: string;
   frequency: number;
   startTime: number;
   duration: number;
   velocity: number;
   instrument: InstrumentName;
   synthParams?: SynthParams;
+  lfoParams?: LfoParams;
 }
 
-function synthesizeNote(
+function synthesizeNoteSync(
   ctx: AudioContext,
   master: GainNode,
-  note: ScheduledNote
+  note: ScheduledNote,
+  _playId?: number
 ): void {
-  const { frequency, startTime, duration, velocity, instrument, synthParams: sp } = note;
+  const gmName = GM_INSTRUMENT_MAP[note.instrument];
+  if (gmName) {
+    const key = `${ctx === (globalThis as Record<string, unknown>).__sfCtx ? "live" : "offline"}_${gmName}`;
+    const cached = soundfontCache.get(key);
+    if (cached) {
+      void cached.then((player) => {
+        if (ctx.state === "closed") return;
+        player.connect(master);
+        const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
+        const durSecs = Math.max(0.05, note.duration);
+        player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs });
+      });
+      return;
+    }
+  }
+  void synthesizeNote(ctx, master, note);
+}
+
+async function synthesizeNote(
+  ctx: AudioContext,
+  master: GainNode,
+  note: ScheduledNote,
+  isCancelled?: () => boolean
+): Promise<void> {
+  const { frequency, startTime, duration, velocity, instrument, synthParams: sp, lfoParams: lfo } = note;
+  const midiNote = pitchToMidi(note.pitch ?? "");
+
+  if (GM_INSTRUMENT_MAP[instrument]) {
+    try {
+      const player = await getSoundfontPlayer(ctx, instrument);
+      if (isCancelled?.()) return;
+      if (player && ctx.state !== "closed") {
+        player.connect(master);
+        const gainVal = Math.max(0.01, Math.min(1, velocity / 127));
+        const durSecs = Math.max(0.05, duration);
+        player.play(midiNote, startTime, { gain: gainVal, duration: durSecs });
+        return;
+      }
+    } catch {
+      /* fall through to oscillator synth */
+    }
+  }
+  if (isCancelled?.()) return;
+
   const gain = velocity / 127;
   const endTime = startTime + duration;
   const wave = sp?.waveform;
@@ -477,8 +680,203 @@ function synthesizeNote(
       break;
     }
 
+    case "kick": {
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const env1 = ctx.createGain();
+      const env2 = ctx.createGain();
+      const out = ctx.createGain();
+
+      osc1.type = "triangle";
+      osc2.type = "sine";
+      osc1.frequency.setValueAtTime(150, startTime);
+      osc1.frequency.exponentialRampToValueAtTime(0.001, startTime + 0.35);
+      osc2.frequency.setValueAtTime(60, startTime);
+      osc2.frequency.exponentialRampToValueAtTime(0.001, startTime + 0.4);
+
+      env1.gain.setValueAtTime(gain * 0.9, startTime);
+      env1.gain.exponentialRampToValueAtTime(0.001, startTime + 0.35);
+      env2.gain.setValueAtTime(gain * 0.7, startTime);
+      env2.gain.exponentialRampToValueAtTime(0.001, startTime + 0.4);
+
+      out.gain.value = 1;
+      osc1.connect(env1); env1.connect(out);
+      osc2.connect(env2); env2.connect(out);
+      out.connect(master);
+
+      osc1.start(startTime); osc2.start(startTime);
+      osc1.stop(startTime + 0.5); osc2.stop(startTime + 0.5);
+      break;
+    }
+
+    case "snare": {
+      const bufSize = Math.floor(ctx.sampleRate * 0.1);
+      const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const noiseData = noiseBuf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) noiseData[i] = Math.random() * 2 - 1;
+
+      const noiseSource = ctx.createBufferSource();
+      noiseSource.buffer = noiseBuf;
+
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.value = 1800;
+      noiseFilter.Q.value = 0.7;
+
+      const noiseEnv = ctx.createGain();
+      noiseEnv.gain.setValueAtTime(gain * 0.7, startTime);
+      noiseEnv.gain.exponentialRampToValueAtTime(0.001, startTime + 0.18);
+
+      const snapOsc = ctx.createOscillator();
+      snapOsc.type = "triangle";
+      snapOsc.frequency.value = 180;
+      const snapEnv = ctx.createGain();
+      snapEnv.gain.setValueAtTime(gain * 0.5, startTime);
+      snapEnv.gain.exponentialRampToValueAtTime(0.001, startTime + 0.06);
+
+      const out = ctx.createGain();
+      out.gain.value = 1;
+      noiseSource.connect(noiseFilter); noiseFilter.connect(noiseEnv); noiseEnv.connect(out);
+      snapOsc.connect(snapEnv); snapEnv.connect(out);
+      out.connect(master);
+
+      noiseSource.start(startTime); snapOsc.start(startTime);
+      noiseSource.stop(startTime + 0.25); snapOsc.stop(startTime + 0.1);
+      break;
+    }
+
+    case "hihat": {
+      const bufSize = Math.floor(ctx.sampleRate * 0.05);
+      const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const noiseData = noiseBuf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) noiseData[i] = Math.random() * 2 - 1;
+
+      const noiseSource = ctx.createBufferSource();
+      noiseSource.buffer = noiseBuf;
+
+      const hipassFilter = ctx.createBiquadFilter();
+      hipassFilter.type = "highpass";
+      hipassFilter.frequency.value = 7000;
+      hipassFilter.Q.value = 0.5;
+
+      const decayTime = atkOvr ?? Math.min(duration * 0.8, 0.12);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(gain * 0.6, startTime);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + decayTime);
+
+      noiseSource.connect(hipassFilter); hipassFilter.connect(env); env.connect(master);
+      noiseSource.start(startTime);
+      noiseSource.stop(startTime + decayTime + 0.02);
+      break;
+    }
+
+    case "clap": {
+      const offsets = [0, 0.008, 0.016];
+      offsets.forEach((offset) => {
+        const bufSize = Math.floor(ctx.sampleRate * 0.06);
+        const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+        const noiseData = noiseBuf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) noiseData[i] = Math.random() * 2 - 1;
+
+        const noiseSource = ctx.createBufferSource();
+        noiseSource.buffer = noiseBuf;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.value = 1200;
+        filter.Q.value = 0.9;
+
+        const env = ctx.createGain();
+        const t = startTime + offset;
+        env.gain.setValueAtTime(gain * (offset === 0 ? 0.6 : 0.4), t);
+        env.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+
+        noiseSource.connect(filter); filter.connect(env); env.connect(master);
+        noiseSource.start(t);
+        noiseSource.stop(t + 0.12);
+      });
+      break;
+    }
+
+    case "guitar": {
+      const sampleRate = ctx.sampleRate;
+      const period = Math.round(sampleRate / frequency);
+      const bufSize = period * 2;
+      const buf = ctx.createBuffer(1, bufSize, sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+      const source = ctx.createBufferSource();
+      source.buffer = buf;
+      source.loop = true;
+
+      const bandpass = ctx.createBiquadFilter();
+      bandpass.type = "bandpass";
+      bandpass.frequency.value = frequency;
+      bandpass.Q.value = fQ ?? Math.max(5, frequency / 40);
+
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = fCut !== undefined ? frequency * fCut : Math.min(frequency * 6, 4000);
+      lowpass.Q.value = 0.5;
+
+      const rel = relOvr ?? Math.min(duration + 0.5, 2.5);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(gain * 0.8, startTime);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + rel);
+
+      source.connect(bandpass); bandpass.connect(lowpass); lowpass.connect(env); env.connect(master);
+      source.start(startTime);
+      source.stop(startTime + rel + 0.05);
+      break;
+    }
+
+    case "electric_piano": {
+      const carrier = ctx.createOscillator();
+      const modulator = ctx.createOscillator();
+      const modGain = ctx.createGain();
+      const env = ctx.createGain();
+
+      carrier.type = "sine";
+      carrier.frequency.value = frequency;
+      modulator.type = "sine";
+      modulator.frequency.value = frequency * 14;
+
+      const modIndex = (fCut ?? 1) * 0.3 * frequency;
+      modGain.gain.value = modIndex;
+      modulator.connect(modGain);
+      modGain.connect(carrier.frequency);
+
+      const atk = atkOvr ?? 0.005;
+      const rel = relOvr ?? Math.min(duration + 0.4, 1.8);
+      env.gain.setValueAtTime(0, startTime);
+      env.gain.linearRampToValueAtTime(gain * 0.75, startTime + atk);
+      env.gain.exponentialRampToValueAtTime(gain * 0.45, startTime + Math.max(atk + 0.01, 0.08));
+      env.gain.exponentialRampToValueAtTime(0.0001, startTime + rel);
+
+      if (lfo && lfo.type === "tremolo") {
+        const lfoOsc = ctx.createOscillator();
+        const lfoGain = ctx.createGain();
+        lfoOsc.frequency.value = lfo.rate;
+        lfoGain.gain.value = lfo.depth * 0.3;
+        lfoOsc.connect(lfoGain);
+        lfoGain.connect(env.gain);
+        lfoOsc.start(startTime);
+        lfoOsc.stop(startTime + rel + 0.1);
+      }
+
+      carrier.connect(env); env.connect(master);
+      carrier.start(startTime); modulator.start(startTime);
+      carrier.stop(startTime + rel + 0.1); modulator.stop(startTime + rel + 0.1);
+      break;
+    }
+
     default:
       break;
+  }
+
+  if (lfo && instrument !== "electric_piano") {
+    void lfo;
   }
 }
 
@@ -491,6 +889,9 @@ export class AudioEngine {
   private isPlaying = false;
   private playStartTime = 0;
   private animFrameId: number | null = null;
+  private looping = false;
+  private lastMutedTracks: Set<string> | undefined = undefined;
+  private playId = 0;
   private onPlayheadUpdate: ((beat: number) => void) | null = null;
   private onPlaybackEnd: (() => void) | null = null;
   private onActiveNotesUpdate: ((midiNotes: Set<number>) => void) | null = null;
@@ -506,6 +907,7 @@ export class AudioEngine {
       this.master.connect(this.ctx.destination);
       this.reverbBus = createReverb(this.ctx);
       this.reverbBus.output.connect(this.master);
+      (globalThis as Record<string, unknown>).__sfCtx = this.ctx;
     }
 
     if (this.ctx.state === "suspended") {
@@ -513,6 +915,11 @@ export class AudioEngine {
     }
 
     return { ctx: this.ctx, master: this.master!, reverbBus: this.reverbBus! };
+  }
+
+  async preloadSoundfonts(): Promise<void> {
+    const { ctx } = this.ensureContext();
+    await preloadAllInstruments(ctx);
   }
 
   setCallbacks(
@@ -525,19 +932,33 @@ export class AudioEngine {
     this.onActiveNotesUpdate = onActiveNotesUpdate ?? null;
   }
 
-  play(composition: CompositionState, mutedTracks?: Set<string>): void {
+  play(composition: CompositionState, mutedTracks?: Set<string>, options?: { loop?: boolean }): void {
     if (this.isPlaying) {
       this.stop();
     }
+    this.looping = options?.loop ?? false;
+    this.lastMutedTracks = mutedTracks;
+    void this._playAsync(composition, mutedTracks);
+  }
 
+  private async _playAsync(composition: CompositionState, mutedTracks?: Set<string>): Promise<void> {
     const { ctx, master, reverbBus } = this.ensureContext();
     this.bpm = composition.bpm;
     this.totalBeats = composition.totalBeats;
     this.isPlaying = true;
     this.currentComposition = composition;
 
+    const usedInstruments = new Set(
+      composition.notes
+        .map((n) => composition.tracks[n.track]?.instrument)
+        .filter((i): i is InstrumentName => !!i && !!GM_INSTRUMENT_MAP[i as InstrumentName])
+    );
+    await Promise.all([...usedInstruments].map((inst) => getSoundfontPlayer(ctx, inst)));
+
+    if (!this.isPlaying) return;
+
     const secondsPerBeat = 60 / composition.bpm;
-    const startTime = ctx.currentTime + 0.05;
+    const startTime = ctx.currentTime + 0.1;
     this.playStartTime = startTime;
 
     const trackChains = new Map<string, { gain: GainNode; pan: StereoPannerNode }>();
@@ -546,13 +967,22 @@ export class AudioEngine {
       g.gain.value = track.volume ?? 1;
       const p = ctx.createStereoPanner();
       p.pan.value = track.pan ?? 0;
-      g.connect(p);
+
+      let postGain: AudioNode = g;
+      if (track.distortion) {
+        postGain = applyDistortion(ctx, g, track.distortion);
+      }
+      if (track.delayParams) {
+        postGain = applyDelay(ctx, postGain, track.delayParams);
+      }
+      postGain.connect(p);
       p.connect(master);
+
       const reverbAmount = track.reverb ?? 0.2;
       if (reverbAmount > 0) {
         const reverbSend = ctx.createGain();
         reverbSend.gain.value = reverbAmount;
-        g.connect(reverbSend);
+        postGain.connect(reverbSend);
         reverbSend.connect(reverbBus.input);
       }
       trackChains.set(name, { gain: g, pan: p });
@@ -566,6 +996,8 @@ export class AudioEngine {
       if (mutedTracks?.has(name)) chain.gain.gain.value = 0;
     }
 
+    const thisPlayId = ++this.playId;
+
     for (const note of composition.notes) {
       const track = composition.tracks[note.track];
       if (!track) continue;
@@ -575,14 +1007,16 @@ export class AudioEngine {
       const noteStartTime = startTime + note.beat * secondsPerBeat;
       const noteDuration = note.duration * secondsPerBeat;
 
-      synthesizeNote(ctx, dest, {
+      synthesizeNoteSync(ctx, dest, {
+        pitch: note.pitch,
         frequency: pitchToFrequency(note.pitch),
         startTime: noteStartTime,
         duration: noteDuration,
         velocity: note.velocity,
         instrument: track.instrument,
-        synthParams: track.synthParams
-      });
+        synthParams: track.synthParams,
+        lfoParams: track.lfoParams
+      }, thisPlayId);
     }
 
     const endTime = startTime + this.totalBeats * secondsPerBeat + 2.0;
@@ -608,6 +1042,12 @@ export class AudioEngine {
       }
 
       if (this.ctx.currentTime >= endTime) {
+        if (this.looping && this.currentComposition) {
+          this.isPlaying = false;
+          if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
+          this.play(this.currentComposition, this.lastMutedTracks, { loop: true });
+          return;
+        }
         this.isPlaying = false;
         if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
         if (this.onPlaybackEnd) this.onPlaybackEnd();
@@ -627,7 +1067,9 @@ export class AudioEngine {
     }
   }
 
+
   stop(): void {
+    this.playId++;
     this.isPlaying = false;
     this.currentComposition = null;
     this.trackGains.clear();
@@ -637,11 +1079,8 @@ export class AudioEngine {
       this.animFrameId = null;
     }
 
-    if (this.ctx) {
-      const oldCtx = this.ctx;
-      this.ctx = null;
-      this.master = null;
-      void oldCtx.close();
+    if (this.ctx && this.ctx.state !== "closed") {
+      void this.ctx.suspend();
     }
 
     if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
@@ -714,13 +1153,22 @@ export async function exportMp3(composition: CompositionState): Promise<Blob> {
     g.gain.value = track.volume ?? 1;
     const p = offlineCtx.createStereoPanner();
     p.pan.value = track.pan ?? 0;
-    g.connect(p);
+
+    let postGain: AudioNode = g;
+    if (track.distortion) {
+      postGain = applyDistortion(offlineCtx as unknown as AudioContext, g, track.distortion);
+    }
+    if (track.delayParams) {
+      postGain = applyDelay(offlineCtx as unknown as AudioContext, postGain, track.delayParams);
+    }
+    postGain.connect(p);
     p.connect(master);
+
     const reverbAmount = track.reverb ?? 0.2;
     if (reverbAmount > 0) {
       const reverbSend = offlineCtx.createGain();
       reverbSend.gain.value = reverbAmount;
-      g.connect(reverbSend);
+      postGain.connect(reverbSend);
       reverbSend.connect(reverbBus.input);
     }
     trackChains.set(name, g);
@@ -734,13 +1182,15 @@ export async function exportMp3(composition: CompositionState): Promise<Blob> {
     const noteStart = note.beat * secondsPerBeat + 0.05;
     const noteDuration = note.duration * secondsPerBeat;
 
-    synthesizeNote(offlineCtx as unknown as AudioContext, dest, {
+    await synthesizeNote(offlineCtx as unknown as AudioContext, dest, {
+      pitch: note.pitch,
       frequency: pitchToFrequency(note.pitch),
       startTime: noteStart,
       duration: noteDuration,
       velocity: note.velocity,
       instrument: track.instrument,
-      synthParams: track.synthParams
+      synthParams: track.synthParams,
+      lfoParams: track.lfoParams
     });
   }
 
@@ -797,6 +1247,12 @@ export const TRACK_COLORS: Record<string, string> = {
   flute: "#a0e8af",
   bell: "#e8d5a0",
   synth_lead: "#ff6b9d",
+  kick: "#e05050",
+  snare: "#e08050",
+  hihat: "#c8c840",
+  clap: "#e0a030",
+  guitar: "#80c060",
+  electric_piano: "#60b8d0",
   default: "#c0ceff"
 };
 
@@ -804,6 +1260,50 @@ export function getTrackColor(instrument: string): string {
   return TRACK_COLORS[instrument] ?? TRACK_COLORS.default;
 }
 
+const DEFAULT_VOLUMES: Record<InstrumentName, number> = {
+  piano:         0.80,
+  strings:       0.75,
+  bass:          0.90,
+  pad:           0.65,
+  pluck:         0.75,
+  marimba:       0.72,
+  organ:         0.65,
+  flute:         0.72,
+  bell:          0.60,
+  synth_lead:    0.55,
+  kick:          0.95,
+  snare:         0.85,
+  hihat:         0.60,
+  clap:          0.75,
+  guitar:        0.72,
+  electric_piano:0.75,
+};
+
+const DEFAULT_REVERBS: Record<InstrumentName, number> = {
+  piano:         0.20,
+  strings:       0.45,
+  bass:          0.00,
+  pad:           0.60,
+  pluck:         0.20,
+  marimba:       0.25,
+  organ:         0.30,
+  flute:         0.35,
+  bell:          0.55,
+  synth_lead:    0.30,
+  kick:          0.00,
+  snare:         0.05,
+  hihat:         0.00,
+  clap:          0.08,
+  guitar:        0.25,
+  electric_piano:0.20,
+};
+
 export function buildDefaultTrack(instrument: InstrumentName): MusicTrack {
-  return { name: instrument, instrument, volume: 0.85, reverb: 0.2, pan: 0 };
+  return {
+    name: instrument,
+    instrument,
+    volume: DEFAULT_VOLUMES[instrument] ?? 0.75,
+    reverb: DEFAULT_REVERBS[instrument] ?? 0.2,
+    pan: 0
+  };
 }

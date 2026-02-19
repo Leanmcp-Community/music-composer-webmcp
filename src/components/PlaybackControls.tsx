@@ -12,6 +12,7 @@ interface PlaybackControlsProps {
   onShare: () => void;
   shareUrl: string | null;
   isExportingMp3: boolean;
+  onStopAgent?: () => void;
 }
 
 export function PlaybackControls({
@@ -24,10 +25,11 @@ export function PlaybackControls({
   onExportMp3,
   onShare,
   shareUrl,
-  isExportingMp3
+  isExportingMp3,
+  onStopAgent
 }: PlaybackControlsProps) {
   const hasNotes = composition.notes.length > 0;
-  const canPlay = hasNotes && !isAgentRunning;
+  const canPlay = hasNotes;
 
   const totalSeconds =
     composition.totalBeats > 0 && composition.bpm > 0
@@ -49,13 +51,7 @@ export function PlaybackControls({
             className={`playback-btn play-btn ${canPlay ? "ready" : "disabled"}`}
             onClick={canPlay ? onPlay : undefined}
             disabled={!canPlay}
-            title={
-              isAgentRunning
-                ? "Wait for agent to finish composing"
-                : !hasNotes
-                ? "No notes to play"
-                : "Play composition"
-            }
+            title={!hasNotes ? "No notes to play" : "Play composition"}
           >
             <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
               <polygon points="4,2 16,9 4,16" />
@@ -68,6 +64,20 @@ export function PlaybackControls({
               <rect x="3" y="3" width="12" height="12" rx="1.5" />
             </svg>
             <span>Stop</span>
+          </button>
+        )}
+
+        {isAgentRunning && (
+          <button
+            className="playback-btn stop-agent-btn"
+            onClick={onStopAgent}
+            title="Stop the agent"
+            style={{ marginLeft: "8px", opacity: 0.85 }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+              <rect x="2" y="2" width="10" height="10" rx="1" />
+            </svg>
+            <span>Stop Agent</span>
           </button>
         )}
 

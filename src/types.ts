@@ -88,7 +88,7 @@ export interface LlmChatMessage {
   }>;
 }
 
-export type InstrumentName = "piano" | "strings" | "bass" | "pad" | "pluck" | "marimba" | "organ" | "flute" | "bell" | "synth_lead";
+export type InstrumentName = "piano" | "strings" | "bass" | "pad" | "pluck" | "marimba" | "organ" | "flute" | "bell" | "synth_lead" | "kick" | "snare" | "hihat" | "clap" | "guitar" | "electric_piano";
 
 export interface MusicNote {
   id: string;
@@ -109,6 +109,27 @@ export interface SynthParams {
   detune?: number;
 }
 
+export type DistortionType = "overdrive" | "hard_clip" | "fuzz" | "saturation" | "bitcrush";
+
+export interface DistortionParams {
+  type: DistortionType;
+  drive: number;
+  mix: number;
+  outputGain: number;
+}
+
+export interface DelayParams {
+  time: number;
+  feedback: number;
+  mix: number;
+}
+
+export interface LfoParams {
+  type: "vibrato" | "tremolo";
+  rate: number;
+  depth: number;
+}
+
 export interface MusicTrack {
   name: string;
   instrument: InstrumentName;
@@ -116,6 +137,9 @@ export interface MusicTrack {
   reverb: number;
   pan: number;
   synthParams?: SynthParams;
+  distortion?: DistortionParams;
+  delayParams?: DelayParams;
+  lfoParams?: LfoParams;
 }
 
 export interface CompositionState {
