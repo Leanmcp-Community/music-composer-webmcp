@@ -89,7 +89,8 @@ function drawWaterfallNotes(
   notes: MusicNote[],
   tracks: CompositionState["tracks"],
   playheadBeat: number,
-  viewWidth: number
+  viewWidth: number,
+  mutedTracks: Set<string>
 ): void {
   const visibleBeats = viewWidth / BEAT_WIDTH;
   const viewEnd = playheadBeat + visibleBeats;
@@ -102,8 +103,9 @@ function drawWaterfallNotes(
     if (noteEnd < playheadBeat || noteStart > viewEnd) continue;
 
     const track = tracks[note.track];
+    const isMuted = mutedTracks.has(note.track);
     const color = getTrackColor(track?.instrument ?? "piano");
-    const alpha = 0.55 + (note.velocity / 127) * 0.45;
+    const alpha = isMuted ? 0.12 : (0.55 + (note.velocity / 127) * 0.45);
     const xLeft = (noteStart - playheadBeat) * BEAT_WIDTH;
     const xRight = (noteEnd - playheadBeat) * BEAT_WIDTH;
     const x = Math.max(0, xLeft);
@@ -178,7 +180,8 @@ function drawStaticNotes(
   notes: MusicNote[],
   tracks: CompositionState["tracks"],
   canvasWidth: number,
-  glowNoteId: string | null
+  glowNoteId: string | null,
+  mutedTracks: Set<string>
 ): void {
   for (const note of notes) {
     const midi = pitchToMidi(note.pitch);
@@ -189,9 +192,12 @@ function drawStaticNotes(
     const y = midiToRow(midi) * ROW_HEIGHT + 1;
     const h = ROW_HEIGHT - 2;
     const track = tracks[note.track];
+    const isMuted = mutedTracks.has(note.track);
     const color = getTrackColor(track?.instrument ?? "piano");
-    if (note.id === glowNoteId) { ctx.shadowColor = color; ctx.shadowBlur = 14; }
-    ctx.globalAlpha = 0.55 + (note.velocity / 127) * 0.45;
+    const isGlowing = note.id === glowNoteId;
+    if (isGlowing) { ctx.shadowColor = color; ctx.shadowBlur = 22; }
+    const baseAlpha = isMuted ? 0.12 : (0.55 + (note.velocity / 127) * 0.45);
+    ctx.globalAlpha = isGlowing ? Math.min(1, baseAlpha + 0.3) : baseAlpha;
     ctx.fillStyle = color;
     const r = Math.min(3, h / 2, w / 2);
     ctx.beginPath();
@@ -204,6 +210,11 @@ function drawStaticNotes(
     ctx.lineTo(x, y + r);
     ctx.quadraticCurveTo(x, y, x + r, y);
     ctx.closePath(); ctx.fill();
+    if (isGlowing) {
+      ctx.globalAlpha = 0.25;
+      ctx.shadowBlur = 30;
+      ctx.fill();
+    }
     ctx.globalAlpha = 1; ctx.shadowBlur = 0; ctx.shadowColor = "transparent";
   }
 }
@@ -214,9 +225,11 @@ interface PianoRollProps {
   latestNoteId: string | null;
   isPlaying: boolean;
   activeNotes?: Set<number>;
+  mutedTracks: Set<string>;
+  onToggleMute: (trackName: string) => void;
 }
 
-export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes }: PianoRollProps) {
+export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute }: PianoRollProps) {
   const waterfallCanvasRef = useRef<HTMLCanvasElement>(null);
   const gridCanvasRef = useRef<HTMLCanvasElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -247,6 +260,9 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     prevActiveRef.current = new Set(curr);
   }, [activeNotes]);
 
+  const mutedTracksRef = useRef(mutedTracks);
+  mutedTracksRef.current = mutedTracks;
+
   const renderWaterfall = useCallback(() => {
     const canvas = waterfallCanvasRef.current;
     if (!canvas) return;
@@ -260,7 +276,7 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     ctx.save();
     ctx.translate(KEYBOARD_WIDTH, 0);
     drawWaterfallBackground(ctx, gridW);
-    drawWaterfallNotes(ctx, compositionRef.current.notes, compositionRef.current.tracks, playheadRef.current, gridW);
+    drawWaterfallNotes(ctx, compositionRef.current.notes, compositionRef.current.tracks, playheadRef.current, gridW, mutedTracksRef.current);
     ctx.restore();
 
     drawKeyboard(ctx, activeNotesRef.current, flashMapRef.current);
@@ -276,7 +292,7 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     ctx.clearRect(0, 0, width, CANVAS_HEIGHT);
     const beatsPerBar = compositionRef.current.timeSignatureNumerator || 4;
     drawStaticGrid(ctx, compositionRef.current.totalBeats, beatsPerBar, width);
-    drawStaticNotes(ctx, compositionRef.current.notes, compositionRef.current.tracks, width, glowNoteIdRef.current);
+    drawStaticNotes(ctx, compositionRef.current.notes, compositionRef.current.tracks, width, glowNoteIdRef.current, mutedTracksRef.current);
   }, []);
 
   useEffect(() => {
@@ -298,11 +314,11 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
 
   useEffect(() => {
     if (!isPlaying) renderStatic();
-  }, [composition, isPlaying, renderStatic]);
+  }, [composition, isPlaying, renderStatic, mutedTracks]);
 
   useEffect(() => {
     if (!isPlaying) renderWaterfall();
-  }, [activeNotes, isPlaying, renderWaterfall]);
+  }, [activeNotes, isPlaying, renderWaterfall, mutedTracks]);
 
   useEffect(() => {
     const canvas = waterfallCanvasRef.current;
@@ -331,7 +347,11 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     if (!latestNoteId) return;
     glowNoteIdRef.current = latestNoteId;
     if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
-    glowTimerRef.current = setTimeout(() => { glowNoteIdRef.current = null; }, 600);
+    renderStatic();
+    glowTimerRef.current = setTimeout(() => {
+      glowNoteIdRef.current = null;
+      renderStatic();
+    }, 1200);
 
     const note = composition.notes.find((n) => n.id === latestNoteId);
     if (!note || !scrollContainerRef.current) return;
@@ -340,10 +360,11 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
     const noteY = midiToRow(pitchToMidi(note.pitch)) * ROW_HEIGHT;
     const viewW = sc.clientWidth;
     const viewH = sc.clientHeight;
-    if (noteX > sc.scrollLeft + viewW - BEAT_WIDTH * 4) sc.scrollLeft = Math.max(0, noteX - viewW * 0.3);
-    if (noteY < sc.scrollTop + ROW_HEIGHT * 2) sc.scrollTop = Math.max(0, noteY - viewH * 0.2);
-    else if (noteY > sc.scrollTop + viewH - ROW_HEIGHT * 4) sc.scrollTop = Math.min(CANVAS_HEIGHT - viewH, noteY - viewH * 0.7);
-  }, [latestNoteId, composition.notes]);
+    const targetX = Math.max(0, noteX - viewW * 0.6);
+    const targetY = noteY - viewH * 0.5;
+    const clampedY = Math.max(0, Math.min(CANVAS_HEIGHT - viewH, targetY));
+    sc.scrollTo({ left: targetX, top: clampedY, behavior: "smooth" });
+  }, [latestNoteId, composition.notes, renderStatic]);
 
   const noteCount = composition.notes.length;
   const totalBars = composition.totalBeats > 0
@@ -376,12 +397,22 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
           <span className="piano-roll-stat-value">{Object.keys(composition.tracks).length}</span>
         </span>
         <div className="piano-roll-track-legend">
-          {Object.entries(composition.tracks).map(([name, track]) => (
-            <span key={name} className="piano-roll-track-chip" style={{ borderColor: getTrackColor(track.instrument) }}>
-              <span className="piano-roll-track-dot" style={{ background: getTrackColor(track.instrument) }} />
-              {name}
-            </span>
-          ))}
+          {Object.entries(composition.tracks).map(([name, track]) => {
+            const isMuted = mutedTracks.has(name);
+            const color = getTrackColor(track.instrument);
+            return (
+              <button
+                key={name}
+                className={`piano-roll-track-chip ${isMuted ? "muted" : ""}`}
+                style={{ borderColor: isMuted ? "#3a3a50" : color }}
+                onClick={() => onToggleMute(name)}
+                title={isMuted ? `Unmute ${name}` : `Mute ${name}`}
+              >
+                <span className="piano-roll-track-dot" style={{ background: isMuted ? "#3a3a50" : color }} />
+                {name}
+              </button>
+            );
+          })}
         </div>
       </div>
 

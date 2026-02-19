@@ -93,6 +93,8 @@ export default function App() {
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
   const [isExportingMp3, setIsExportingMp3] = useState(false);
+  const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
+  const mutedTracksRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (initializedRef.current) return;
@@ -229,12 +231,26 @@ export default function App() {
     setStatusMessage("Loaded surprise objective");
   };
 
+  useEffect(() => {
+    if (isPlaying) {
+      audioEngine.updateMutedTracks(mutedTracks);
+    }
+  }, [mutedTracks, isPlaying]);
+
+  const handleToggleMute = useCallback((trackName: string) => {
+    const next = new Set(mutedTracksRef.current);
+    if (next.has(trackName)) next.delete(trackName);
+    else next.add(trackName);
+    mutedTracksRef.current = next;
+    setMutedTracks(next);
+  }, []);
+
   const handlePlay = useCallback(() => {
     const comp = compositionRef.current;
     if (!comp.notes.length) return;
     setIsPlaying(true);
     setPlayheadBeat(0);
-    audioEngine.play(comp);
+    audioEngine.play(comp, mutedTracksRef.current);
   }, []);
 
   const handleStop = useCallback(() => {
@@ -346,6 +362,8 @@ export default function App() {
           latestNoteId={latestNoteId}
           isPlaying={isPlaying}
           activeNotes={activeNotes}
+          mutedTracks={mutedTracks}
+          onToggleMute={handleToggleMute}
         />
 
         <PlaybackControls

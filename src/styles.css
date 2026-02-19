@@ -426,9 +426,22 @@ code {
   border-radius: 999px;
   border: 1px solid;
   font-size: 0.72rem;
+  font-family: inherit;
   background: rgba(5, 10, 24, 0.6);
   color: var(--text);
   text-transform: capitalize;
+  cursor: pointer;
+  transition: opacity 0.15s ease-out, border-color 0.15s ease-out;
+}
+
+.piano-roll-track-chip:hover {
+  opacity: 0.85;
+}
+
+.piano-roll-track-chip.muted {
+  opacity: 0.4;
+  color: var(--muted);
+  text-decoration: line-through;
 }
 
 .piano-roll-track-dot {

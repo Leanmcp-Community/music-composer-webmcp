@@ -486,6 +486,8 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private reverbBus: { input: GainNode; output: GainNode } | null = null;
+  private trackGains: Map<string, GainNode> = new Map();
+  private trackBaseVolumes: Map<string, number> = new Map();
   private isPlaying = false;
   private playStartTime = 0;
   private animFrameId: number | null = null;
@@ -523,7 +525,7 @@ export class AudioEngine {
     this.onActiveNotesUpdate = onActiveNotesUpdate ?? null;
   }
 
-  play(composition: CompositionState): void {
+  play(composition: CompositionState, mutedTracks?: Set<string>): void {
     if (this.isPlaying) {
       this.stop();
     }
@@ -554,6 +556,14 @@ export class AudioEngine {
         reverbSend.connect(reverbBus.input);
       }
       trackChains.set(name, { gain: g, pan: p });
+    }
+
+    this.trackGains.clear();
+    this.trackBaseVolumes.clear();
+    for (const [name, chain] of trackChains) {
+      this.trackGains.set(name, chain.gain);
+      this.trackBaseVolumes.set(name, composition.tracks[name]?.volume ?? 1);
+      if (mutedTracks?.has(name)) chain.gain.gain.value = 0;
     }
 
     for (const note of composition.notes) {
@@ -610,9 +620,18 @@ export class AudioEngine {
     this.animFrameId = requestAnimationFrame(tick);
   }
 
+  updateMutedTracks(mutedTracks: Set<string>): void {
+    for (const [name, gainNode] of this.trackGains) {
+      const baseVol = this.trackBaseVolumes.get(name) ?? 1;
+      gainNode.gain.value = mutedTracks.has(name) ? 0 : baseVol;
+    }
+  }
+
   stop(): void {
     this.isPlaying = false;
     this.currentComposition = null;
+    this.trackGains.clear();
+    this.trackBaseVolumes.clear();
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
