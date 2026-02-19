@@ -242,10 +242,21 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
   const playheadRef = useRef(playheadBeat);
   const compositionRef = useRef(composition);
   const activeNotesRef = useRef(activeNotes ?? new Set<number>());
+  const centeredRef = useRef(false);
 
   playheadRef.current = playheadBeat;
   compositionRef.current = composition;
   activeNotesRef.current = activeNotes ?? new Set<number>();
+
+  const centerOnNotes = useCallback((notes: typeof composition.notes) => {
+    const sc = scrollContainerRef.current;
+    if (!sc || notes.length === 0) return;
+    const midis = notes.map((n) => pitchToMidi(n.pitch)).sort((a, b) => a - b);
+    const medianMidi = midis[Math.floor(midis.length / 2)];
+    const noteY = midiToRow(medianMidi) * ROW_HEIGHT;
+    const targetY = noteY - sc.clientHeight * 0.5;
+    sc.scrollTop = Math.max(0, Math.min(CANVAS_HEIGHT - sc.clientHeight, targetY));
+  }, []);
 
   const totalBeats = Math.max(composition.totalBeats + 8, MIN_CANVAS_BEATS);
   const gridWidth = totalBeats * BEAT_WIDTH;
@@ -313,12 +324,25 @@ export function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, 
   }, [isPlaying, renderWaterfall, renderStatic]);
 
   useEffect(() => {
-    if (!isPlaying) renderStatic();
-  }, [composition, isPlaying, renderStatic, mutedTracks]);
+    if (!isPlaying) {
+      renderStatic();
+      if (!centeredRef.current && composition.notes.length > 0) {
+        centeredRef.current = true;
+        centerOnNotes(composition.notes);
+      }
+    }
+  }, [composition, isPlaying, renderStatic, mutedTracks, centerOnNotes]);
 
   useEffect(() => {
     if (!isPlaying) renderWaterfall();
   }, [activeNotes, isPlaying, renderWaterfall, mutedTracks]);
+
+  useEffect(() => {
+    if (isPlaying) {
+      centeredRef.current = false;
+      centerOnNotes(compositionRef.current.notes);
+    }
+  }, [isPlaying, centerOnNotes]);
 
   useEffect(() => {
     const canvas = waterfallCanvasRef.current;

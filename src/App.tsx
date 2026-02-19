@@ -22,27 +22,128 @@ const DEFAULT_CONFIG: AgentRunConfig = {
   speed: "balanced"
 };
 
-function toBase64Url(value: string): string {
-  const bytes = new TextEncoder().encode(value);
+function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function fromBase64Url(value: string): string {
+function base64UrlToBytes(value: string): Uint8Array {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const withPadding = padded.padEnd(Math.ceil(padded.length / 4) * 4, "=");
+  const binary = atob(withPadding);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+function compactify(comp: CompositionState): object {
+  return {
+    b: comp.bpm,
+    n: comp.timeSignatureNumerator,
+    d: comp.timeSignatureDenominator,
+    t: comp.totalBeats,
+    tr: Object.fromEntries(
+      Object.entries(comp.tracks).map(([k, v]) => [k, {
+        i: v.instrument, v: v.volume, p: v.pan, r: v.reverb,
+        ...(v.synthParams ? { s: v.synthParams } : {}),
+        ...(v.lfoParams ? { l: v.lfoParams } : {}),
+        ...(v.distortion ? { dt: v.distortion } : {}),
+        ...(v.delayParams ? { dl: v.delayParams } : {}),
+      }])
+    ),
+    ns: comp.notes.map(n => [
+      n.id, n.track, n.pitch, n.beat, n.duration, n.velocity, n.addedAt
+    ])
+  };
+}
+
+function decompactify(raw: Record<string, unknown>): CompositionState {
+  const tr = raw.tr as Record<string, Record<string, unknown>>;
+  const tracks: Record<string, import("./types").MusicTrack> = {};
+  for (const [k, v] of Object.entries(tr)) {
+    tracks[k] = {
+      name: k,
+      instrument: v.i as import("./types").InstrumentName,
+      volume: (v.v as number) ?? 0.75,
+      pan: (v.p as number) ?? 0,
+      reverb: (v.r as number) ?? 0.2,
+      ...(v.s ? { synthParams: v.s as import("./types").SynthParams } : {}),
+      ...(v.l ? { lfoParams: v.l as import("./types").LfoParams } : {}),
+      ...(v.dt ? { distortion: v.dt as import("./types").DistortionParams } : {}),
+      ...(v.dl ? { delayParams: v.dl as import("./types").DelayParams } : {}),
+    };
+  }
+  const ns = raw.ns as unknown[][];
+  return {
+    bpm: raw.b as number,
+    timeSignatureNumerator: raw.n as number,
+    timeSignatureDenominator: raw.d as number,
+    totalBeats: raw.t as number,
+    tracks,
+    notes: ns.map(a => ({
+      id: a[0] as string, track: a[1] as string, pitch: a[2] as string,
+      beat: a[3] as number, duration: a[4] as number, velocity: a[5] as number,
+      addedAt: (a[6] as number) ?? 0
+    }))
+  };
+}
+
+async function deflateBytes(data: Uint8Array): Promise<Uint8Array> {
+  const cs = new CompressionStream("deflate-raw");
+  const writer = cs.writable.getWriter();
+  writer.write(data as unknown as BufferSource);
+  writer.close();
+  const reader = cs.readable.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(new Uint8Array(value));
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { result.set(c, offset); offset += c.length; }
+  return result;
+}
+
+async function inflateBytes(data: Uint8Array): Promise<Uint8Array> {
+  const ds = new DecompressionStream("deflate-raw");
+  const writer = ds.writable.getWriter();
+  writer.write(data as unknown as BufferSource);
+  writer.close();
+  const reader = ds.readable.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(new Uint8Array(value));
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { result.set(c, offset); offset += c.length; }
+  return result;
+}
+
+async function encodeComposition(comp: CompositionState): Promise<string> {
+  const json = JSON.stringify(compactify(comp));
+  const raw = new TextEncoder().encode(json);
+  const compressed = await deflateBytes(raw);
+  return "z" + bytesToBase64Url(compressed);
+}
+
+async function decodeComposition(value: string): Promise<CompositionState> {
+  if (value.startsWith("z")) {
+    const compressed = base64UrlToBytes(value.slice(1));
+    const inflated = await inflateBytes(compressed);
+    const json = new TextDecoder().decode(inflated);
+    return decompactify(JSON.parse(json));
+  }
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
   const withPadding = padded.padEnd(Math.ceil(padded.length / 4) * 4, "=");
   const binary = atob(withPadding);
   const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
-function encodeComposition(comp: CompositionState): string {
-  return toBase64Url(JSON.stringify(comp));
-}
-
-function decodeComposition(value: string): CompositionState {
-  return JSON.parse(fromBase64Url(value)) as CompositionState;
+  return JSON.parse(new TextDecoder().decode(bytes)) as CompositionState;
 }
 
 function readCompHash(): string | null {
@@ -56,6 +157,17 @@ function buildCompHash(encoded: string): string {
   const params = new URLSearchParams();
   params.set("comp", encoded);
   return `#${params.toString()}`;
+}
+
+function snapComposition(c: CompositionState): CompositionState {
+  return {
+    bpm: c.bpm,
+    timeSignatureNumerator: c.timeSignatureNumerator,
+    timeSignatureDenominator: c.timeSignatureDenominator,
+    tracks: { ...c.tracks },
+    notes: c.notes.slice(),
+    totalBeats: c.totalBeats
+  };
 }
 
 function formatRuntimeMs(ms: number): string {
@@ -112,15 +224,7 @@ export default function App() {
       (note: MusicNote) => {
         const c = compositionRef.current;
         setLatestNoteId(note.id);
-        const snap = {
-          bpm: c.bpm,
-          timeSignatureNumerator: c.timeSignatureNumerator,
-          timeSignatureDenominator: c.timeSignatureDenominator,
-          tracks: { ...c.tracks },
-          notes: c.notes.slice(),
-          totalBeats: c.totalBeats
-        };
-        setComposition(snap);
+        setComposition(snapComposition(c));
 
         if (isAgentRunningRef.current && c.totalBeats >= 2) {
           const prevCount = tracksWithNotesRef.current.size;
@@ -134,14 +238,7 @@ export default function App() {
             layeredRestartTimerRef.current = setTimeout(() => {
               const latest = compositionRef.current;
               audioEngine.play(
-                {
-                  bpm: latest.bpm,
-                  timeSignatureNumerator: latest.timeSignatureNumerator,
-                  timeSignatureDenominator: latest.timeSignatureDenominator,
-                  tracks: { ...latest.tracks },
-                  notes: latest.notes.slice(),
-                  totalBeats: latest.totalBeats
-                },
+                snapComposition(latest),
                 mutedTracksRef.current,
                 { loop: true }
               );
@@ -153,14 +250,7 @@ export default function App() {
       },
       () => {
         const c = compositionRef.current;
-        setComposition({
-          bpm: c.bpm,
-          timeSignatureNumerator: c.timeSignatureNumerator,
-          timeSignatureDenominator: c.timeSignatureDenominator,
-          tracks: { ...c.tracks },
-          notes: c.notes.slice(),
-          totalBeats: c.totalBeats
-        });
+        setComposition(snapComposition(c));
       }
     );
 
@@ -168,8 +258,7 @@ export default function App() {
 
     const compHash = readCompHash();
     if (compHash) {
-      try {
-        const loaded = decodeComposition(compHash);
+      decodeComposition(compHash).then((loaded) => {
         const comp = compositionRef.current;
         comp.bpm = loaded.bpm;
         comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
@@ -179,9 +268,9 @@ export default function App() {
         comp.totalBeats = loaded.totalBeats;
         setComposition({ ...comp });
         setStatusMessage("Shared composition loaded — press Play");
-      } catch {
+      }).catch(() => {
         setStatusMessage("Invalid share link.");
-      }
+      });
     }
   }, []);
 
@@ -326,7 +415,7 @@ export default function App() {
       setStatusMessage("No composition to share.");
       return;
     }
-    const encoded = encodeComposition(comp);
+    const encoded = await encodeComposition(comp);
     const hash = buildCompHash(encoded);
     const url = `${window.location.origin}${window.location.pathname}${hash}`;
     try {
@@ -374,7 +463,7 @@ export default function App() {
       return;
     }
     try {
-      const loaded = decodeComposition(encoded);
+      const loaded = await decodeComposition(encoded);
       const comp = compositionRef.current;
       comp.bpm = loaded.bpm;
       comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
@@ -520,7 +609,7 @@ export default function App() {
             </button>
           </div>
           <p className="hint">
-            URL hash format: <code>#run=...</code>. No backend required.
+            Compressed URL hash format: <code>#comp=z...</code>. No backend required.
           </p>
         </section>
 

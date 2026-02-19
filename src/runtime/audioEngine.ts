@@ -260,11 +260,12 @@ interface ScheduledNote {
   lfoParams?: LfoParams;
 }
 
+let connectedPlayers = new WeakSet<object>();
+
 function synthesizeNoteSync(
   ctx: AudioContext,
   master: GainNode,
-  note: ScheduledNote,
-  _playId?: number
+  note: ScheduledNote
 ): void {
   const gmName = GM_INSTRUMENT_MAP[note.instrument];
   if (gmName) {
@@ -273,7 +274,11 @@ function synthesizeNoteSync(
     if (cached) {
       void cached.then((player) => {
         if (ctx.state === "closed") return;
-        player.connect(master);
+        const routeKey = player as unknown as object;
+        if (!connectedPlayers.has(routeKey)) {
+          player.connect(master);
+          connectedPlayers.add(routeKey);
+        }
         const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
         const durSecs = Math.max(0.05, note.duration);
         player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs });
@@ -281,7 +286,7 @@ function synthesizeNoteSync(
       return;
     }
   }
-  void synthesizeNote(ctx, master, note);
+  synthesizeNoteOsc(ctx, master, note);
 }
 
 async function synthesizeNote(
@@ -298,7 +303,11 @@ async function synthesizeNote(
       const player = await getSoundfontPlayer(ctx, instrument);
       if (isCancelled?.()) return;
       if (player && ctx.state !== "closed") {
-        player.connect(master);
+        const routeKey = player as unknown as object;
+        if (!connectedPlayers.has(routeKey)) {
+          player.connect(master);
+          connectedPlayers.add(routeKey);
+        }
         const gainVal = Math.max(0.01, Math.min(1, velocity / 127));
         const durSecs = Math.max(0.05, duration);
         player.play(midiNote, startTime, { gain: gainVal, duration: durSecs });
@@ -310,6 +319,15 @@ async function synthesizeNote(
   }
   if (isCancelled?.()) return;
 
+  synthesizeNoteOsc(ctx, master, note);
+}
+
+function synthesizeNoteOsc(
+  ctx: AudioContext,
+  master: GainNode,
+  note: ScheduledNote
+): void {
+  const { frequency, startTime, duration, velocity, instrument, synthParams: sp, lfoParams: lfo } = note;
   const gain = velocity / 127;
   const endTime = startTime + duration;
   const wave = sp?.waveform;
@@ -880,6 +898,18 @@ async function synthesizeNote(
   }
 }
 
+function stopAllSoundfontVoices(): void {
+  for (const [key, promise] of soundfontCache) {
+    if (!key.startsWith("live_")) continue;
+    promise.then((player) => {
+      try { player.stop(); } catch { /* */ }
+    }).catch(() => { /* */ });
+  }
+}
+
+const SCHEDULER_LOOKAHEAD = 0.35;
+const SCHEDULER_INTERVAL = 40;
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -898,6 +928,10 @@ export class AudioEngine {
   private totalBeats = 0;
   private bpm = 120;
   private currentComposition: CompositionState | null = null;
+  private playTrackChains: Map<string, { gain: GainNode; pan: StereoPannerNode }> = new Map();
+  private sortedNotes: MusicNote[] = [];
+  private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
+  private schedulerIndex = 0;
 
   private ensureContext(): { ctx: AudioContext; master: GainNode; reverbBus: { input: GainNode; output: GainNode } } {
     if (!this.ctx || this.ctx.state === "closed") {
@@ -910,15 +944,37 @@ export class AudioEngine {
       (globalThis as Record<string, unknown>).__sfCtx = this.ctx;
     }
 
-    if (this.ctx.state === "suspended") {
-      void this.ctx.resume();
-    }
-
     return { ctx: this.ctx, master: this.master!, reverbBus: this.reverbBus! };
+  }
+
+  private cleanupPlayback(): void {
+    if (this.schedulerTimer !== null) {
+      clearTimeout(this.schedulerTimer);
+      this.schedulerTimer = null;
+    }
+    this.schedulerIndex = 0;
+
+    stopAllSoundfontVoices();
+
+    for (const [, chain] of this.playTrackChains) {
+      try { chain.gain.disconnect(); } catch { /* */ }
+      try { chain.pan.disconnect(); } catch { /* */ }
+    }
+    this.playTrackChains.clear();
+    this.trackGains.clear();
+    this.trackBaseVolumes.clear();
+    connectedPlayers = new WeakSet<object>();
+
+    if (this.ctx && this.ctx.state !== "closed") {
+      void this.ctx.suspend();
+    }
   }
 
   async preloadSoundfonts(): Promise<void> {
     const { ctx } = this.ensureContext();
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
     await preloadAllInstruments(ctx);
   }
 
@@ -943,6 +999,11 @@ export class AudioEngine {
 
   private async _playAsync(composition: CompositionState, mutedTracks?: Set<string>): Promise<void> {
     const { ctx, master, reverbBus } = this.ensureContext();
+
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
+
     this.bpm = composition.bpm;
     this.totalBeats = composition.totalBeats;
     this.isPlaying = true;
@@ -958,7 +1019,7 @@ export class AudioEngine {
     if (!this.isPlaying) return;
 
     const secondsPerBeat = 60 / composition.bpm;
-    const startTime = ctx.currentTime + 0.1;
+    const startTime = ctx.currentTime + 0.15;
     this.playStartTime = startTime;
 
     const trackChains = new Map<string, { gain: GainNode; pan: StereoPannerNode }>();
@@ -996,33 +1057,46 @@ export class AudioEngine {
       if (mutedTracks?.has(name)) chain.gain.gain.value = 0;
     }
 
+    this.playTrackChains = trackChains;
     const thisPlayId = ++this.playId;
 
-    for (const note of composition.notes) {
-      const track = composition.tracks[note.track];
-      if (!track) continue;
+    this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
+    this.schedulerIndex = 0;
 
-      const chain = trackChains.get(note.track);
-      const dest = chain ? chain.gain : master;
-      const noteStartTime = startTime + note.beat * secondsPerBeat;
-      const noteDuration = note.duration * secondsPerBeat;
+    const scheduleChunk = () => {
+      if (!this.isPlaying || this.playId !== thisPlayId || !this.ctx) return;
+      const lookAheadEnd = this.ctx.currentTime + SCHEDULER_LOOKAHEAD;
+      while (this.schedulerIndex < this.sortedNotes.length) {
+        const mn = this.sortedNotes[this.schedulerIndex];
+        const noteStartTime = startTime + mn.beat * secondsPerBeat;
+        if (noteStartTime > lookAheadEnd) break;
 
-      synthesizeNoteSync(ctx, dest, {
-        pitch: note.pitch,
-        frequency: pitchToFrequency(note.pitch),
-        startTime: noteStartTime,
-        duration: noteDuration,
-        velocity: note.velocity,
-        instrument: track.instrument,
-        synthParams: track.synthParams,
-        lfoParams: track.lfoParams
-      }, thisPlayId);
-    }
+        const track = composition.tracks[mn.track];
+        if (track) {
+          const chain = trackChains.get(mn.track);
+          const dest = chain ? chain.gain : master;
+          synthesizeNoteSync(ctx, dest, {
+            pitch: mn.pitch,
+            frequency: pitchToFrequency(mn.pitch),
+            startTime: noteStartTime,
+            duration: mn.duration * secondsPerBeat,
+            velocity: mn.velocity,
+            instrument: track.instrument,
+            synthParams: track.synthParams,
+            lfoParams: track.lfoParams
+          });
+        }
+        this.schedulerIndex++;
+      }
+      this.schedulerTimer = setTimeout(scheduleChunk, SCHEDULER_INTERVAL);
+    };
+    scheduleChunk();
 
     const endTime = startTime + this.totalBeats * secondsPerBeat + 2.0;
+    let noteSearchStart = 0;
 
     const tick = () => {
-      if (!this.isPlaying || !this.ctx) return;
+      if (!this.isPlaying || !this.ctx || this.playId !== thisPlayId) return;
 
       const elapsed = this.ctx.currentTime - this.playStartTime;
       const currentBeat = elapsed * (this.bpm / 60);
@@ -1031,11 +1105,16 @@ export class AudioEngine {
         this.onPlayheadUpdate(Math.max(0, currentBeat));
       }
 
-      if (this.onActiveNotesUpdate && this.currentComposition) {
+      if (this.onActiveNotesUpdate && this.sortedNotes.length > 0) {
         const active = new Set<number>();
-        for (const note of this.currentComposition.notes) {
-          if (currentBeat >= note.beat && currentBeat < note.beat + note.duration) {
-            active.add(pitchToMidi(note.pitch));
+        while (noteSearchStart < this.sortedNotes.length && this.sortedNotes[noteSearchStart].beat + this.sortedNotes[noteSearchStart].duration < currentBeat) {
+          noteSearchStart++;
+        }
+        for (let i = noteSearchStart; i < this.sortedNotes.length; i++) {
+          const n = this.sortedNotes[i];
+          if (n.beat > currentBeat) break;
+          if (currentBeat < n.beat + n.duration) {
+            active.add(pitchToMidi(n.pitch));
           }
         }
         this.onActiveNotesUpdate(active);
@@ -1043,11 +1122,13 @@ export class AudioEngine {
 
       if (this.ctx.currentTime >= endTime) {
         if (this.looping && this.currentComposition) {
+          this.cleanupPlayback();
           this.isPlaying = false;
           if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
           this.play(this.currentComposition, this.lastMutedTracks, { loop: true });
           return;
         }
+        this.cleanupPlayback();
         this.isPlaying = false;
         if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
         if (this.onPlaybackEnd) this.onPlaybackEnd();
@@ -1071,17 +1152,13 @@ export class AudioEngine {
   stop(): void {
     this.playId++;
     this.isPlaying = false;
-    this.currentComposition = null;
-    this.trackGains.clear();
-    this.trackBaseVolumes.clear();
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
     }
-
-    if (this.ctx && this.ctx.state !== "closed") {
-      void this.ctx.suspend();
-    }
+    this.cleanupPlayback();
+    this.currentComposition = null;
+    this.sortedNotes = [];
 
     if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
     if (this.onPlayheadUpdate) this.onPlayheadUpdate(-1);

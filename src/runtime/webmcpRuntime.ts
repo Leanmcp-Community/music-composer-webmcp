@@ -28,28 +28,7 @@ type SnapshotSubscriber = (snapshot: RuntimeSnapshot) => void;
 type ToolCallSubscriber = (record: ToolCallRecord) => void;
 
 const MAX_LOGS = 240;
-const TOOL_ALIASES: Record<string, string> = {
-  fill: "fill_region",
-  fill_canvas: "fill_region",
-  fill_layer: "fill_region",
-  bucket_fill: "fill_region",
-  flood_fill: "fill_region",
-  fill_area: "fill_region",
-  paint: "paint_stroke",
-  draw: "paint_stroke",
-  draw_stroke: "paint_stroke",
-  stroke: "paint_stroke",
-  draw_path: "paint_path",
-  path: "paint_path",
-  erase: "erase_stroke",
-  erase_path: "erase_stroke",
-  clear: "clear_layer",
-  clear_canvas: "clear_layer",
-  hide_layer: "set_layer_visibility",
-  show_layer: "set_layer_visibility",
-  canvas_state: "get_canvas_state",
-  get_state: "get_canvas_state"
-};
+const TOOL_ALIASES: Record<string, string> = {};
 
 function now() {
   return Date.now();
