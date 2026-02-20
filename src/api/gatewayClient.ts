@@ -63,11 +63,11 @@ export interface AnthropicMessagesResponse {
   stop_reason?: string | null;
 }
 
-const DEFAULT_GATEWAY_ORIGIN = "https://aigateway.leanmcp.com";
+const DEFAULT_GATEWAY_ORIGIN: string = import.meta.env.VITE_GATEWAY_ORIGIN
+  ?? (import.meta.env.DEV ? "" : "https://aigateway.leanmcp.com");
 
 function getGatewayApiKey(requestKey?: string): string {
-  const envKey = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_GATEWAY_API_KEY;
-  return envKey || requestKey || "";
+  return (import.meta.env.VITE_GATEWAY_API_KEY as string | undefined) || requestKey || "";
 }
 
 function buildAnthropicMessagesUrl(endpoint: string): string {
