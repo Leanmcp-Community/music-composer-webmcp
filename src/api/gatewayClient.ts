@@ -128,7 +128,13 @@ export async function requestAnthropicMessages(
 
   const requestBody = JSON.stringify({
     model: request.model,
-    system: request.system,
+    system: [
+      {
+        type: "text",
+        text: request.system,
+        cache_control: { type: "ephemeral" }
+      }
+    ],
     messages: request.messages,
     tools: request.tools,
     tool_choice: { type: "auto" },
