@@ -137,6 +137,42 @@ h2 {
   box-shadow: 0 0 8px currentColor;
 }
 
+.auth-bar {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.auth-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(132, 195, 255, 0.4);
+  flex-shrink: 0;
+}
+
+.auth-email {
+  font-size: 0.85rem;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-hint {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.btn.btn-sm {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+}
+
 .status-dot.native {
   color: var(--ok);
   background: var(--ok);

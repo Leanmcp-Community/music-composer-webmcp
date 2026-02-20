@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { saveShare, loadShare } from "./runtime/shareService";
+import { useAuth } from "./runtime/useAuth";
 import { PianoRoll, type PianoRollHandle } from "./components/PianoRoll";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { AudioEngine, exportMp3, exportStems } from "./runtime/audioEngine";
@@ -213,6 +214,7 @@ export default function App() {
   const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
   const mutedTracksRef = useRef<Set<string>>(new Set());
   const pianoRollRef = useRef<PianoRollHandle>(null);
+  const { user, login, logout, getToken } = useAuth();
   const tracksWithNotesRef = useRef<Set<string>>(new Set());
   const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAgentRunningRef = useRef(false);
@@ -336,6 +338,13 @@ export default function App() {
   };
 
   const startAgent = async () => {
+    const token = getToken();
+    if (!token) {
+      login();
+      setStatusMessage("Sign in to start composing");
+      return;
+    }
+
     const comp = compositionRef.current;
     comp.bpm = 120;
     comp.timeSignatureNumerator = 4;
@@ -356,7 +365,7 @@ export default function App() {
       setStatusMessage("Loading instruments...");
       await audioEngine.preloadSoundfonts();
       setStatusMessage("Composing — playback starts automatically...");
-      await agentSingleton.run(config, {
+      await agentSingleton.run({ ...config, apiKey: token }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;
           if (!running) {
@@ -605,6 +614,18 @@ export default function App() {
             <strong>{snapshot.isNativeSupported ? "Native WebMCP" : "Polyfill runtime"}</strong>
             <span>{statusMessage}</span>
           </div>
+          {user ? (
+            <div className="auth-bar">
+              {user.photoURL && <img className="auth-avatar" src={user.photoURL} alt="" referrerPolicy="no-referrer" />}
+              <span className="auth-email">{user.displayName ?? user.email}</span>
+              <button className="btn btn-sm" onClick={logout}>Sign out</button>
+            </div>
+          ) : (
+            <div className="auth-bar">
+              <button className="btn primary" onClick={login}>Sign in with Google</button>
+              <span className="auth-hint">Required to start the agent</span>
+            </div>
+          )}
         </section>
 
         <section className="panel">
@@ -638,30 +659,19 @@ export default function App() {
             </label>
           </div>
 
-          <div className="field-grid">
-            <label className="field">
-              <span>API Key</span>
-              <input
-                type="password"
-                value={config.apiKey}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => updateConfig("apiKey", event.target.value)}
-                placeholder="Bearer token..."
-              />
-            </label>
-            <label className="field">
-              <span>Speed</span>
-              <select
-                value={config.speed}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                  updateConfig("speed", event.target.value as AgentRunConfig["speed"])
-                }
-              >
-                <option value="cinematic">Cinematic</option>
-                <option value="balanced">Balanced</option>
-                <option value="rapid">Rapid</option>
-              </select>
-            </label>
-          </div>
+          <label className="field">
+            <span>Speed</span>
+            <select
+              value={config.speed}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                updateConfig("speed", event.target.value as AgentRunConfig["speed"])
+              }
+            >
+              <option value="cinematic">Cinematic</option>
+              <option value="balanced">Balanced</option>
+              <option value="rapid">Rapid</option>
+            </select>
+          </label>
 
           <div className="button-row">
             <button className="btn primary" onClick={startAgent} disabled={isRunning}>
@@ -674,24 +684,6 @@ export default function App() {
               Surprise
             </button>
           </div>
-        </section>
-
-        <section className="panel">
-          <h2>Replay + Share</h2>
-          <div className="button-row">
-            <button className="btn" onClick={handleShare}>
-              Copy Share Link
-            </button>
-            <button className="btn" onClick={replayFromHash}>
-              Replay from Link
-            </button>
-            <button className="btn" onClick={handleExport}>
-              Export JSON
-            </button>
-          </div>
-          <p className="hint">
-            Compressed URL hash format: <code>#comp=z...</code>. No backend required.
-          </p>
         </section>
 
         <section className="panel">
