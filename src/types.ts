@@ -66,12 +66,13 @@ export interface ReplayRun {
   toolCalls: ToolCallRecord[];
 }
 
+export type LlmProvider = "openai" | "anthropic";
+
 export interface AgentRunConfig {
   objective: string;
-  endpoint: string;
+  provider: LlmProvider;
   model: string;
   apiKey: string;
-  speed: "cinematic" | "balanced" | "rapid";
 }
 
 export interface LlmChatMessage {

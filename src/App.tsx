@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import posthog from "posthog-js";
 import { saveShare, loadShare } from "./runtime/shareService";
 import { useAuth } from "./runtime/useAuth";
 import { PianoRoll, type PianoRollHandle } from "./components/PianoRoll";
@@ -8,20 +9,24 @@ import { AgentEngine } from "./runtime/agentEngine";
 import { createMusicTools, createInitialCompositionState } from "./runtime/musicToolRegistry";
 import { ReplayEngine } from "./runtime/replayEngine";
 import { WebMcpRuntime, type RuntimeSnapshot } from "./runtime/webmcpRuntime";
-import type { AgentRunConfig, CompositionState, MusicNote } from "./types";
+import type { AgentRunConfig, CompositionState, LlmProvider, MusicNote } from "./types";
 
 const runtimeSingleton = new WebMcpRuntime();
 const replaySingleton = new ReplayEngine();
 const agentSingleton = new AgentEngine(runtimeSingleton, replaySingleton);
 const audioEngine = new AudioEngine();
 
+const PROVIDER_MODELS: Record<LlmProvider, { label: string; defaultModel: string }> = {
+  openai: { label: "OpenAI", defaultModel: "gpt-4o" },
+  anthropic: { label: "Anthropic", defaultModel: "claude-sonnet-4-5" },
+};
+
 const DEFAULT_CONFIG: AgentRunConfig = {
   objective:
     "Compose a melancholic jazz nocturne in D minor, 3/4 time, 72 BPM. Use piano for the melody and strings for lush chords. At least 16 bars.",
-  endpoint: "/v1/anthropic/v1/messages",
-  model: "claude-sonnet-4-5",
+  provider: "openai",
+  model: "gpt-4o",
   apiKey: "",
-  speed: "balanced"
 };
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -148,20 +153,19 @@ async function decodeComposition(value: string): Promise<CompositionState> {
   return JSON.parse(new TextDecoder().decode(bytes)) as CompositionState;
 }
 
-function readShareHash(): { type: "id"; value: string } | { type: "comp"; value: string } | null {
-  const hash = window.location.hash.replace(/^#/, "");
-  const params = new URLSearchParams(hash);
-  const id = params.get("id");
+function readShareParam(): { type: "id"; value: string } | { type: "comp"; value: string } | null {
+  const searchParams = new URLSearchParams(window.location.search);
+  const id = searchParams.get("id");
   if (id && id.trim().length > 0) return { type: "id", value: id.trim() };
-  const comp = params.get("comp");
+  const hash = window.location.hash.replace(/^#/, "");
+  const hashParams = new URLSearchParams(hash);
+  const comp = hashParams.get("comp");
   if (comp && comp.trim().length > 0) return { type: "comp", value: comp.trim() };
   return null;
 }
 
-function buildShareHash(id: string): string {
-  const params = new URLSearchParams();
-  params.set("id", id);
-  return `#${params.toString()}`;
+function buildShareUrl(id: string): string {
+  return `${window.location.origin}${window.location.pathname}?id=${id}`;
 }
 
 function snapComposition(c: CompositionState): CompositionState {
@@ -264,11 +268,18 @@ export default function App() {
 
     runtimeSingleton.registerTools(tools);
 
-    const shareHash = readShareHash();
-    if (shareHash) {
-      if (shareHash.type === "id") {
+    posthog.init("phc_EoMHKFbx6j2wUFsf8ywqgHntY4vEXC3ZzLFoPJVjRRT", {
+      api_host: "https://d18m0xvdtnkibr.cloudfront.net",
+      session_recording: { maskAllInputs: false },
+      capture_pageview: true,
+      capture_pageleave: true,
+    });
+
+    const shareParam = readShareParam();
+    if (shareParam) {
+      if (shareParam.type === "id") {
         setStatusMessage("Loading shared composition...");
-        loadShare(shareHash.value).then((payload) => {
+        loadShare(shareParam.value).then((payload) => {
           if (!payload) { setStatusMessage("Share link not found."); return; }
           const comp = compositionRef.current;
           const loaded = payload.composition;
@@ -285,7 +296,7 @@ export default function App() {
           setStatusMessage(`Shared composition loaded — press Play`);
         }).catch(() => setStatusMessage("Failed to load share link."));
       } else {
-        decodeComposition(shareHash.value).then((loaded) => {
+        decodeComposition(shareParam.value).then((loaded) => {
           const comp = compositionRef.current;
           comp.bpm = loaded.bpm;
           comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
@@ -457,19 +468,18 @@ export default function App() {
         composition: snapComposition(comp),
         prompt: config.objective,
         model: config.model,
-        endpoint: config.endpoint,
+        endpoint: `gateway/${config.provider}`,
         metrics: currentSnapshot.metrics,
         toolCallHistory: replayRun?.toolCalls ?? [],
         replayRun: replayRun ?? null,
       });
-      const hash = buildShareHash(id);
-      const url = `${window.location.origin}${window.location.pathname}${hash}`;
+      const url = buildShareUrl(id);
       try {
         await navigator.clipboard.writeText(url);
       } catch {
         /* clipboard blocked */
       }
-      window.history.replaceState(null, "", hash);
+      window.history.replaceState(null, "", `?id=${id}`);
       setShareUrl(url);
       setStatusMessage("Share link copied");
       setTimeout(() => setShareUrl(null), 3000);
@@ -536,20 +546,20 @@ export default function App() {
   }, []);
 
   const replayFromHash = async () => {
-    const shareHash = readShareHash();
-    if (!shareHash) {
+    const shareParam = readShareParam();
+    if (!shareParam) {
       setStatusMessage("No share link found in URL.");
       return;
     }
     try {
       let loaded: CompositionState;
-      if (shareHash.type === "id") {
-        const payload = await loadShare(shareHash.value);
+      if (shareParam.type === "id") {
+        const payload = await loadShare(shareParam.value);
         if (!payload) { setStatusMessage("Share link not found."); return; }
         loaded = payload.composition;
         if (payload.prompt) setConfig((prev) => ({ ...prev, objective: payload.prompt }));
       } else {
-        loaded = await decodeComposition(shareHash.value);
+        loaded = await decodeComposition(shareParam.value);
       }
       const comp = compositionRef.current;
       comp.bpm = loaded.bpm;
@@ -642,36 +652,28 @@ export default function App() {
 
           <div className="field-grid">
             <label className="field">
-              <span>Gateway Endpoint</span>
-              <input
-                value={config.endpoint}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => updateConfig("endpoint", event.target.value)}
-                placeholder="/v1/anthropic/v1/messages"
-              />
+              <span>Provider</span>
+              <select
+                value={config.provider}
+                onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                  const p = event.target.value as LlmProvider;
+                  setConfig((prev) => ({ ...prev, provider: p, model: PROVIDER_MODELS[p].defaultModel }));
+                }}
+              >
+                {(Object.keys(PROVIDER_MODELS) as LlmProvider[]).map((p) => (
+                  <option key={p} value={p}>{PROVIDER_MODELS[p].label}</option>
+                ))}
+              </select>
             </label>
             <label className="field">
               <span>Model</span>
               <input
                 value={config.model}
                 onChange={(event: ChangeEvent<HTMLInputElement>) => updateConfig("model", event.target.value)}
-                placeholder="claude-sonnet-4-5"
+                placeholder={PROVIDER_MODELS[config.provider].defaultModel}
               />
             </label>
           </div>
-
-          <label className="field">
-            <span>Speed</span>
-            <select
-              value={config.speed}
-              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                updateConfig("speed", event.target.value as AgentRunConfig["speed"])
-              }
-            >
-              <option value="cinematic">Cinematic</option>
-              <option value="balanced">Balanced</option>
-              <option value="rapid">Rapid</option>
-            </select>
-          </label>
 
           <div className="button-row">
             <button className="btn primary" onClick={startAgent} disabled={isRunning}>

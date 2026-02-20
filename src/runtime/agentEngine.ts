@@ -1,5 +1,5 @@
 import {
-  requestAnthropicMessages,
+  requestLlm,
   type AnthropicChatMessage,
   type AnthropicMessageContentBlock,
   type AnthropicToolDefinition,
@@ -10,11 +10,7 @@ import type { AgentRunConfig } from "../types";
 import type { ReplayEngine } from "./replayEngine";
 import type { WebMcpRuntime } from "./webmcpRuntime";
 
-const SPEED_DELAYS: Record<AgentRunConfig["speed"], number> = {
-  cinematic: 820,
-  balanced: 420,
-  rapid: 170
-};
+const STEP_DELAY_MS = 420;
 
 const SURPRISE_OBJECTIVES = [
   "Compose a melancholic jazz nocturne in D minor, 3/4 time, around 72 BPM. Use bass, electric_piano, and strings. At least 16 bars with smooth voice leading and tremolo on the electric piano.",
@@ -231,8 +227,8 @@ export class AgentEngine {
       return;
     }
 
-    if (!config.endpoint || !config.model) {
-      throw new Error("Endpoint and model are required.");
+    if (!config.model) {
+      throw new Error("Model is required.");
     }
 
     const currentTools = this.runtime.getTools();
@@ -245,7 +241,6 @@ export class AgentEngine {
     this.runId += 1;
 
     const thisRun = this.runId;
-    const delay = SPEED_DELAYS[config.speed] ?? SPEED_DELAYS.balanced;
     const sessionId = `comp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
     this.runtime.setAgentRunning(true);
@@ -260,7 +255,7 @@ export class AgentEngine {
     const SAFETY_CAP = 120;
 
     this.runtime.log("Composition agent started", "info", {
-      endpoint: config.endpoint,
+      provider: config.provider,
       model: config.model,
       toolCount: tools.length,
       sessionId
@@ -276,8 +271,8 @@ export class AgentEngine {
         callbacks.onScene("Composing");
         this.runtime.setScene("Composing");
 
-        const assistant = await requestAnthropicMessages({
-          endpoint: config.endpoint,
+        const assistant = await requestLlm({
+          provider: config.provider,
           model: config.model,
           apiKey: config.apiKey,
           system: systemPrompt,
@@ -345,7 +340,7 @@ export class AgentEngine {
             is_error: !resultEnvelope.ok
           });
 
-          await sleep(delay + randomInt(0, Math.round(delay * 0.22)));
+          await sleep(STEP_DELAY_MS + randomInt(0, Math.round(STEP_DELAY_MS * 0.22)));
         }
 
         messages.push({

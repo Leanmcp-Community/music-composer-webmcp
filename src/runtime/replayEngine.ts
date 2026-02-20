@@ -33,7 +33,7 @@ export class ReplayEngine {
       version: 1,
       objective: config.objective,
       model: config.model,
-      endpoint: config.endpoint,
+      endpoint: `gateway/${config.provider}`,
       seed: Math.floor(Math.random() * 1_000_000_000),
       startedAt: new Date().toISOString(),
       toolCalls: []

@@ -1,4 +1,4 @@
-import type { ToolInputSchema } from "../types";
+import type { LlmProvider, ToolInputSchema } from "../types";
 
 export interface AnthropicToolDefinition {
   name: string;
@@ -34,6 +34,17 @@ export type AnthropicMessageContentBlock =
 export interface AnthropicChatMessage {
   role: "user" | "assistant";
   content: string | AnthropicMessageContentBlock[];
+}
+
+export interface LlmRequest {
+  provider: LlmProvider;
+  model: string;
+  apiKey: string;
+  system: string;
+  messages: AnthropicChatMessage[];
+  tools: AnthropicToolDefinition[];
+  maxTokens?: number;
+  sessionId?: string;
 }
 
 interface AnthropicMessagesRequest {
@@ -168,4 +179,106 @@ export async function requestAnthropicMessages(
   }
 
   return payload;
+}
+
+// OpenAI chat completions via gateway (/v1/openai/v1/chat/completions)
+async function requestOpenAiMessages(request: Omit<AnthropicMessagesRequest, "endpoint"> & { endpoint: string }): Promise<AnthropicMessagesResponse> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (request.apiKey) headers.Authorization = `Bearer ${request.apiKey}`;
+  if (request.sessionId) headers["leanmcp-session-id"] = request.sessionId;
+
+  const openAiTools = request.tools.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
+
+  const openAiMessages: Array<Record<string, unknown>> = [
+    { role: "system", content: request.system },
+    ...request.messages.map((m) => {
+      if (typeof m.content === "string") return { role: m.role, content: m.content };
+      const toolResults: Array<Record<string, unknown>> = [];
+      const textParts: string[] = [];
+      const toolCalls: Array<Record<string, unknown>> = [];
+      for (const block of m.content as AnthropicMessageContentBlock[]) {
+        const b = block as Record<string, unknown>;
+        if (b.type === "tool_result") {
+          toolResults.push({
+            role: "tool",
+            tool_call_id: b.tool_use_id,
+            content: typeof b.content === "string" ? b.content : JSON.stringify(b.content),
+          });
+        } else if (b.type === "tool_use") {
+          toolCalls.push({
+            id: b.id,
+            type: "function",
+            function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+          });
+        } else if (b.type === "text") {
+          textParts.push(b.text as string);
+        }
+      }
+      if (toolResults.length > 0) return toolResults;
+      if (toolCalls.length > 0) {
+        return { role: "assistant", content: textParts.join("\n") || null, tool_calls: toolCalls };
+      }
+      return { role: m.role, content: textParts.join("\n") };
+    }).flat(),
+  ];
+
+  const body = JSON.stringify({
+    model: request.model,
+    messages: openAiMessages,
+    tools: openAiTools,
+    tool_choice: "auto",
+    max_tokens: request.maxTokens ?? 4096,
+    temperature: 0.25,
+  });
+
+  const url = `${DEFAULT_GATEWAY_ORIGIN}/v1/openai/v1/chat/completions`;
+  const response = await fetch(url, { method: "POST", headers, body });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    if (response.status === 401) {
+      throw new Error(`Gateway request failed (401). Sign in to use the agent. Response: ${errText.slice(0, 500)}`);
+    }
+    throw new Error(`Gateway request failed (${response.status}): ${errText.slice(0, 800)}`);
+  }
+
+  const data = await response.json() as {
+    choices: Array<{
+      message: {
+        content: string | null;
+        tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+      };
+    }>;
+  };
+
+  const choice = data.choices?.[0]?.message;
+  if (!choice) throw new Error("OpenAI response missing choices");
+
+  const content: AnthropicMessageContentBlock[] = [];
+  if (choice.content) content.push({ type: "text", text: choice.content });
+  if (choice.tool_calls) {
+    for (const tc of choice.tool_calls) {
+      let input: Record<string, unknown> = {};
+      try { input = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { /* */ }
+      content.push({ type: "tool_use", id: tc.id, name: tc.function.name, input } as AnthropicToolUseBlock);
+    }
+  }
+
+  return { content, stop_reason: choice.tool_calls?.length ? "tool_use" : "end_turn" };
+}
+
+export async function requestLlm(request: LlmRequest): Promise<AnthropicMessagesResponse> {
+  if (request.provider === "openai") {
+    return requestOpenAiMessages({ ...request, endpoint: `${DEFAULT_GATEWAY_ORIGIN}/v1/openai/v1/chat/completions` });
+  }
+  return requestAnthropicMessages({ ...request, endpoint: `${DEFAULT_GATEWAY_ORIGIN}/v1/anthropic/v1/messages` });
 }
