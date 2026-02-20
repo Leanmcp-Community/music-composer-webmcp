@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useImperativeHandle, useRef, forwardRef } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from "react";
 import type { CompositionState, MusicNote } from "../types";
 import { getTrackColor, pitchToMidi } from "../runtime/audioEngine";
 
@@ -237,6 +237,8 @@ interface PianoRollProps {
   activeNotes?: Set<number>;
   mutedTracks: Set<string>;
   onToggleMute: (trackName: string) => void;
+  trackVolumes?: Record<string, number>;
+  onTrackVolumeChange?: (trackName: string, volume: number) => void;
   isAgentRunning?: boolean;
 }
 
@@ -244,7 +246,8 @@ export interface PianoRollHandle {
   centerOnNotes: () => void;
 }
 
-export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute, isAgentRunning }: PianoRollProps, ref) {
+export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute, trackVolumes, onTrackVolumeChange, isAgentRunning }: PianoRollProps, ref) {
+  const [expandedTrack, setExpandedTrack] = useState<string | null>(null);
   const waterfallCanvasRef = useRef<HTMLCanvasElement>(null);
   const gridCanvasRef = useRef<HTMLCanvasElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -441,17 +444,47 @@ export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function Pi
           {Object.entries(composition.tracks).map(([name, track]) => {
             const isMuted = mutedTracks.has(name);
             const color = getTrackColor(track.instrument);
+            const vol = trackVolumes?.[name] ?? track.volume ?? 1;
+            const isExpanded = expandedTrack === name;
             return (
-              <button
-                key={name}
-                className={`piano-roll-track-chip ${isMuted ? "muted" : ""}`}
-                style={{ borderColor: isMuted ? "#3a3a50" : color }}
-                onClick={() => onToggleMute(name)}
-                title={isMuted ? `Unmute ${name}` : `Mute ${name}`}
-              >
-                <span className="piano-roll-track-dot" style={{ background: isMuted ? "#3a3a50" : color }} />
-                {name}
-              </button>
+              <div key={name} className="piano-roll-track-chip-group">
+                <button
+                  className={`piano-roll-track-chip ${isMuted ? "muted" : ""}`}
+                  style={{ borderColor: isMuted ? "#3a3a50" : color }}
+                  onClick={() => onToggleMute(name)}
+                  title={isMuted ? `Unmute ${name}` : `Mute ${name}`}
+                >
+                  <span className="piano-roll-track-dot" style={{ background: isMuted ? "#3a3a50" : color }} />
+                  {name}
+                </button>
+                {onTrackVolumeChange && (
+                  <button
+                    className={`piano-roll-track-vol-btn ${isExpanded ? "active" : ""}`}
+                    onClick={() => setExpandedTrack(isExpanded ? null : name)}
+                    title="Adjust volume"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                      <rect x="1" y="6" width="2" height="4" rx="0.5" fill="currentColor" opacity={vol > 0.05 ? "1" : "0.3"} />
+                      <rect x="4" y="3" width="2" height="7" rx="0.5" fill="currentColor" opacity={vol > 0.35 ? "1" : "0.3"} />
+                      <rect x="7" y="0" width="2" height="10" rx="0.5" fill="currentColor" opacity={vol > 0.65 ? "1" : "0.3"} />
+                    </svg>
+                  </button>
+                )}
+                {isExpanded && onTrackVolumeChange && (
+                  <div className="piano-roll-track-vol-popup">
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={vol}
+                      className="piano-roll-track-vol-slider"
+                      onChange={(e) => onTrackVolumeChange(name, parseFloat(e.target.value))}
+                    />
+                    <span className="piano-roll-track-vol-label">{Math.round(vol * 100)}</span>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>

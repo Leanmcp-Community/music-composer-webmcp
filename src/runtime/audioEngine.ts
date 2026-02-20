@@ -918,15 +918,28 @@ export class AudioEngine {
   private sortedNotes: MusicNote[] = [];
   private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
   private schedulerIndex = 0;
+  private currentLoopStartTime = 0;
   private loopRestartTimer: ReturnType<typeof setTimeout> | null = null;
   private crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private masterCompressor: DynamicsCompressorNode | null = null;
 
   private ensureContext(): { ctx: AudioContext; master: GainNode; reverbBus: { input: GainNode; output: GainNode } } {
     if (!this.ctx || this.ctx.state === "closed") {
       this.ctx = new AudioContext();
+      
+      this.masterCompressor = this.ctx.createDynamicsCompressor();
+      this.masterCompressor.threshold.value = -12;
+      this.masterCompressor.knee.value = 15;
+      this.masterCompressor.ratio.value = 6;
+      this.masterCompressor.attack.value = 0.01;
+      this.masterCompressor.release.value = 0.25;
+
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.65; // Lower master to prevent overall clipping
-      this.master.connect(this.ctx.destination);
+      this.master.gain.value = 0.9;
+      this.master.connect(this.masterCompressor);
+      this.masterCompressor.connect(this.ctx.destination);
+      
       this.reverbBus = createReverb(this.ctx);
       this.reverbBus.output.connect(this.master);
       (globalThis as Record<string, unknown>).__sfCtx = this.ctx;
@@ -1021,12 +1034,22 @@ export class AudioEngine {
     for (const [name, track] of Object.entries(composition.tracks)) {
       const g = ctx.createGain();
       g.gain.value = track.volume ?? 1;
+      
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = -18;
+      comp.knee.value = 10;
+      comp.ratio.value = 4;
+      comp.attack.value = 0.01;
+      comp.release.value = 0.25;
+      
+      g.connect(comp);
+
       const p = ctx.createStereoPanner();
       p.pan.value = track.pan ?? 0;
 
-      let postGain: AudioNode = g;
+      let postGain: AudioNode = comp;
       if (track.distortion) {
-        postGain = applyDistortion(ctx, g, track.distortion);
+        postGain = applyDistortion(ctx, postGain, track.distortion);
       }
       if (track.delayParams) {
         postGain = applyDelay(ctx, postGain, track.delayParams);
@@ -1101,7 +1124,7 @@ export class AudioEngine {
     this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
     this.schedulerIndex = 0;
 
-    let currentLoopStartTime = startTime;
+    this.currentLoopStartTime = startTime;
 
     const scheduleChunk = () => {
       if (!this.isPlaying || this.playId !== thisPlayId || !this.ctx) return;
@@ -1115,14 +1138,23 @@ export class AudioEngine {
           if (this.looping && loopDurationBeats > 0) {
             // Wrap around for the next loop iteration seamlessly
             this.schedulerIndex = 0;
-            currentLoopStartTime += loopDurationSecs;
+            this.currentLoopStartTime += loopDurationSecs;
+            // Guard: if the first note of the new loop is still beyond the lookahead,
+            // stop scheduling now to avoid double-advancing currentLoopStartTime
+            // in the same chunk when the composition is very short.
+            if (this.sortedNotes.length > 0) {
+              const firstNoteTime = this.currentLoopStartTime + this.sortedNotes[0].beat * secondsPerBeat;
+              if (firstNoteTime > lookAheadEnd) break;
+            } else {
+              break;
+            }
           } else {
             break; // Done scheduling all notes
           }
         }
 
         const mn = this.sortedNotes[this.schedulerIndex];
-        const noteStartTime = currentLoopStartTime + mn.beat * secondsPerBeat;
+        const noteStartTime = this.currentLoopStartTime + mn.beat * secondsPerBeat;
         
         if (noteStartTime > lookAheadEnd) break; // Wait for next chunk
 
@@ -1259,11 +1291,20 @@ export class AudioEngine {
             // Build a new routing chain for this track on the fly
             const g = this.ctx.createGain();
             g.gain.value = track.volume ?? 1;
+
+            const comp = this.ctx.createDynamicsCompressor();
+            comp.threshold.value = -24;
+            comp.knee.value = 0;
+            comp.ratio.value = 20;
+            comp.attack.value = 0.005;
+            comp.release.value = 0.1;
+            g.connect(comp);
+
             const p = this.ctx.createStereoPanner();
             p.pan.value = track.pan ?? 0;
             
-            let postGain: AudioNode = g;
-            if (track.distortion) postGain = applyDistortion(this.ctx, g, track.distortion);
+            let postGain: AudioNode = comp;
+            if (track.distortion) postGain = applyDistortion(this.ctx, postGain, track.distortion);
             if (track.delayParams) postGain = applyDelay(this.ctx, postGain, track.delayParams);
             if (track.eq) {
               if (track.eq.highpassHz) {
@@ -1321,6 +1362,12 @@ export class AudioEngine {
       const loopDurationSecs = this.totalBeats * (60 / this.bpm);
       const wrappedElapsed = this.looping && loopDurationSecs > 0 ? elapsed % loopDurationSecs : elapsed;
       const currentBeat = wrappedElapsed * (this.bpm / 60);
+
+      // Recalculate currentLoopStartTime to match the current loop iteration
+      if (this.looping && loopDurationSecs > 0) {
+        const completedLoops = Math.floor(elapsed / loopDurationSecs);
+        this.currentLoopStartTime = this.playStartTime + completedLoops * loopDurationSecs;
+      }
       
       let newIndex = 0;
       while (newIndex < this.sortedNotes.length && this.sortedNotes[newIndex].beat < currentBeat) {
@@ -1341,6 +1388,18 @@ export class AudioEngine {
       gainNode.gain.setValueAtTime(gainNode.gain.value, now);
       gainNode.gain.linearRampToValueAtTime(targetVol, now + 0.05);
     }
+  }
+
+  updateTrackVolume(trackName: string, volume: number): void {
+    this.trackBaseVolumes.set(trackName, volume);
+    const gainNode = this.trackGains.get(trackName);
+    if (!gainNode || !this.ctx) return;
+    const isMuted = this.lastMutedTracks?.has(trackName) ?? false;
+    if (isMuted) return;
+    const now = this.ctx.currentTime;
+    gainNode.gain.cancelScheduledValues(now);
+    gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+    gainNode.gain.linearRampToValueAtTime(volume, now + 0.02);
   }
 
   get playing(): boolean {
@@ -1570,7 +1629,7 @@ export function getTrackColor(instrument: string): string {
 
 const DEFAULT_VOLUMES: Record<InstrumentName, number> = {
   piano:         0.75,
-  strings:       0.45,
+  strings:       0.25,
   bass:          0.85,
   pad:           0.35,
   pluck:         0.65,

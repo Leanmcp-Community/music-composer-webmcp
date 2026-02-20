@@ -213,6 +213,7 @@ export default function App() {
   const [isExportingStems, setIsExportingStems] = useState(false);
   const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
   const mutedTracksRef = useRef<Set<string>>(new Set());
+  const [trackVolumes, setTrackVolumes] = useState<Record<string, number>>({});
   const pianoRollRef = useRef<PianoRollHandle>(null);
   const { user, login, logout } = useAuth();
   const [freeRunsUsed, setFreeRunsUsed] = useState<number>(() => {
@@ -444,6 +445,11 @@ export default function App() {
     setMutedTracks(next);
   }, []);
 
+  const handleTrackVolumeChange = useCallback((trackName: string, volume: number) => {
+    setTrackVolumes((prev) => ({ ...prev, [trackName]: volume }));
+    audioEngine.updateTrackVolume(trackName, volume);
+  }, []);
+
   const handlePlay = useCallback(() => {
     const comp = compositionRef.current;
     if (!comp.notes.length) return;
@@ -618,6 +624,8 @@ export default function App() {
           activeNotes={activeNotes}
           mutedTracks={mutedTracks}
           onToggleMute={handleToggleMute}
+          trackVolumes={trackVolumes}
+          onTrackVolumeChange={handleTrackVolumeChange}
           isAgentRunning={isRunning}
         />
 
