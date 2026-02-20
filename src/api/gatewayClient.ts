@@ -238,7 +238,8 @@ async function requestOpenAiMessages(request: Omit<AnthropicMessagesRequest, "en
     }).flat(),
   ];
 
-  const supportsTemperature = !request.model.startsWith("gpt-5");
+  const NO_TEMPERATURE_MODELS = ["gpt-5", "gpt-5-mini"];
+  const supportsTemperature = !NO_TEMPERATURE_MODELS.includes(request.model);
   const body = JSON.stringify({
     model: request.model,
     messages: openAiMessages,
