@@ -65,6 +65,11 @@ export interface AnthropicMessagesResponse {
 
 const DEFAULT_GATEWAY_ORIGIN = "https://aigateway.leanmcp.com";
 
+function getGatewayApiKey(requestKey?: string): string {
+  const envKey = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_GATEWAY_API_KEY;
+  return envKey || requestKey || "";
+}
+
 function buildAnthropicMessagesUrl(endpoint: string): string {
   const trimmed = String(endpoint || "").trim();
   if (!trimmed) {
@@ -106,14 +111,15 @@ export async function requestAnthropicMessages(
 ): Promise<AnthropicMessagesResponse> {
   const primaryUrl = buildAnthropicMessagesUrl(request.endpoint);
 
+  const apiKey = getGatewayApiKey(request.apiKey);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "anthropic-version": "2023-06-01",
     "anthropic-dangerous-direct-browser-access": "true"
   };
 
-  if (request.apiKey) {
-    headers.Authorization = `Bearer ${request.apiKey}`;
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
   }
 
   if (request.sessionId) {
@@ -183,10 +189,11 @@ export async function requestAnthropicMessages(
 
 // OpenAI chat completions via gateway (/v1/openai/v1/chat/completions)
 async function requestOpenAiMessages(request: Omit<AnthropicMessagesRequest, "endpoint"> & { endpoint: string }): Promise<AnthropicMessagesResponse> {
+  const apiKey = getGatewayApiKey(request.apiKey);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (request.apiKey) headers.Authorization = `Bearer ${request.apiKey}`;
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   if (request.sessionId) headers["leanmcp-session-id"] = request.sessionId;
 
   const openAiTools = request.tools.map((t) => ({

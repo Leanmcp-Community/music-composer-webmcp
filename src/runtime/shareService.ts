@@ -8,6 +8,7 @@ export interface SharePayload {
   metrics: RuntimeMetrics;
   toolCallHistory: ToolCallRecord[];
   replayRun: ReplayRun | null;
+  firebaseUid?: string;
   createdAt?: unknown;
 }
 

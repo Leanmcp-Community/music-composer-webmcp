@@ -16,16 +16,28 @@ const replaySingleton = new ReplayEngine();
 const agentSingleton = new AgentEngine(runtimeSingleton, replaySingleton);
 const audioEngine = new AudioEngine();
 
-const PROVIDER_MODELS: Record<LlmProvider, { label: string; defaultModel: string }> = {
-  openai: { label: "OpenAI", defaultModel: "gpt-4o" },
-  anthropic: { label: "Anthropic", defaultModel: "claude-sonnet-4-5" },
-};
+interface ModelOption {
+  provider: LlmProvider;
+  model: string;
+  label: string;
+  loginRequired?: boolean;
+}
+
+const MODEL_OPTIONS: ModelOption[] = [
+  { provider: "openai", model: "gpt-5.2", label: "GPT-5.2" },
+  { provider: "openai", model: "gpt-5", label: "GPT-5" },
+  { provider: "openai", model: "gpt-5-mini", label: "GPT-5 Mini" },
+  { provider: "anthropic", model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { provider: "anthropic", model: "claude-opus-4-6", label: "Claude Opus 4.6", loginRequired: true },
+];
+
+const DEFAULT_MODEL = MODEL_OPTIONS[0];
 
 const DEFAULT_CONFIG: AgentRunConfig = {
   objective:
     "Compose a melancholic jazz nocturne in D minor, 3/4 time, 72 BPM. Use piano for the melody and strings for lush chords. At least 16 bars.",
-  provider: "openai",
-  model: "gpt-4o",
+  provider: DEFAULT_MODEL.provider,
+  model: DEFAULT_MODEL.model,
   apiKey: "",
 };
 
@@ -218,7 +230,8 @@ export default function App() {
   const [mutedTracks, setMutedTracks] = useState<Set<string>>(new Set());
   const mutedTracksRef = useRef<Set<string>>(new Set());
   const pianoRollRef = useRef<PianoRollHandle>(null);
-  const { user, login, logout, getToken } = useAuth();
+  const { user, login, logout } = useAuth();
+  const [freeRunsUsed, setFreeRunsUsed] = useState(0);
   const tracksWithNotesRef = useRef<Set<string>>(new Set());
   const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAgentRunningRef = useRef(false);
@@ -274,6 +287,7 @@ export default function App() {
       capture_pageview: true,
       capture_pageleave: true,
     });
+
 
     const shareParam = readShareParam();
     if (shareParam) {
@@ -333,6 +347,17 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (user) {
+      posthog.identify(user.uid, {
+        email: user.email,
+        name: user.displayName,
+      });
+    } else {
+      posthog.reset();
+    }
+  }, [user]);
+
   const metrics: MetricCard[] = useMemo(() => {
     return [
       { label: "Tool Calls", value: String(snapshot.metrics.totalCalls) },
@@ -349,10 +374,16 @@ export default function App() {
   };
 
   const startAgent = async () => {
-    const token = getToken();
-    if (!token) {
+    const selectedModel = MODEL_OPTIONS.find((m) => m.model === config.model);
+    if (selectedModel?.loginRequired && !user) {
       login();
-      setStatusMessage("Sign in to start composing");
+      setStatusMessage("Sign in to use this model");
+      return;
+    }
+
+    if (!user && freeRunsUsed >= 1) {
+      login();
+      setStatusMessage("Sign in to continue composing");
       return;
     }
 
@@ -376,7 +407,8 @@ export default function App() {
       setStatusMessage("Loading instruments...");
       await audioEngine.preloadSoundfonts();
       setStatusMessage("Composing — playback starts automatically...");
-      await agentSingleton.run({ ...config, apiKey: token }, {
+      if (!user) setFreeRunsUsed((n) => n + 1);
+      await agentSingleton.run({ ...config, apiKey: "" }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;
           if (!running) {
@@ -472,6 +504,7 @@ export default function App() {
         metrics: currentSnapshot.metrics,
         toolCallHistory: replayRun?.toolCalls ?? [],
         replayRun: replayRun ?? null,
+        ...(user?.uid ? { firebaseUid: user.uid } : {}),
       });
       const url = buildShareUrl(id);
       try {
@@ -633,7 +666,7 @@ export default function App() {
           ) : (
             <div className="auth-bar">
               <button className="btn primary" onClick={login}>Sign in with Google</button>
-              <span className="auth-hint">Required to start the agent</span>
+              <span className="auth-hint">1 free generation, then sign in</span>
             </div>
           )}
         </section>
@@ -650,30 +683,22 @@ export default function App() {
             />
           </label>
 
-          <div className="field-grid">
-            <label className="field">
-              <span>Provider</span>
-              <select
-                value={config.provider}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-                  const p = event.target.value as LlmProvider;
-                  setConfig((prev) => ({ ...prev, provider: p, model: PROVIDER_MODELS[p].defaultModel }));
-                }}
-              >
-                {(Object.keys(PROVIDER_MODELS) as LlmProvider[]).map((p) => (
-                  <option key={p} value={p}>{PROVIDER_MODELS[p].label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span>Model</span>
-              <input
-                value={config.model}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => updateConfig("model", event.target.value)}
-                placeholder={PROVIDER_MODELS[config.provider].defaultModel}
-              />
-            </label>
-          </div>
+          <label className="field">
+            <span>Model</span>
+            <select
+              value={config.model}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                const opt = MODEL_OPTIONS.find((m) => m.model === event.target.value);
+                if (opt) setConfig((prev) => ({ ...prev, provider: opt.provider, model: opt.model }));
+              }}
+            >
+              {MODEL_OPTIONS.map((opt) => (
+                <option key={opt.model} value={opt.model} disabled={opt.loginRequired && !user}>
+                  {opt.label}{opt.loginRequired ? " (sign in)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <div className="button-row">
             <button className="btn primary" onClick={startAgent} disabled={isRunning}>
