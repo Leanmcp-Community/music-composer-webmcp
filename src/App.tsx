@@ -9,29 +9,13 @@ import { AgentEngine } from "./runtime/agentEngine";
 import { createMusicTools, createInitialCompositionState } from "./runtime/musicToolRegistry";
 import { ReplayEngine } from "./runtime/replayEngine";
 import { WebMcpRuntime, type RuntimeSnapshot } from "./runtime/webmcpRuntime";
-import type { AgentRunConfig, CompositionState, LlmProvider, MusicNote } from "./types";
+import type { AgentRunConfig, CompositionState, MusicNote } from "./types";
+import { MODEL_OPTIONS, DEFAULT_MODEL, type ModelOption } from "./config/models";
 
 const runtimeSingleton = new WebMcpRuntime();
 const replaySingleton = new ReplayEngine();
 const agentSingleton = new AgentEngine(runtimeSingleton, replaySingleton);
 const audioEngine = new AudioEngine();
-
-interface ModelOption {
-  provider: LlmProvider;
-  model: string;
-  label: string;
-  loginRequired?: boolean;
-}
-
-const MODEL_OPTIONS: ModelOption[] = [
-  { provider: "openai", model: "gpt-5.2", label: "GPT-5.2" },
-  { provider: "openai", model: "gpt-5", label: "GPT-5" },
-  { provider: "openai", model: "gpt-5-mini", label: "GPT-5 Mini" },
-  { provider: "anthropic", model: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { provider: "anthropic", model: "claude-opus-4-6", label: "Claude Opus 4.6", loginRequired: true },
-];
-
-const DEFAULT_MODEL = MODEL_OPTIONS[0];
 
 const DEFAULT_CONFIG: AgentRunConfig = {
   objective:
@@ -231,7 +215,9 @@ export default function App() {
   const mutedTracksRef = useRef<Set<string>>(new Set());
   const pianoRollRef = useRef<PianoRollHandle>(null);
   const { user, login, logout } = useAuth();
-  const [freeRunsUsed, setFreeRunsUsed] = useState(0);
+  const [freeRunsUsed, setFreeRunsUsed] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem("webmcp_free_runs") ?? "0", 10) || 0; } catch { return 0; }
+  });
   const tracksWithNotesRef = useRef<Set<string>>(new Set());
   const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAgentRunningRef = useRef(false);
@@ -407,7 +393,11 @@ export default function App() {
       setStatusMessage("Loading instruments...");
       await audioEngine.preloadSoundfonts();
       setStatusMessage("Composing — playback starts automatically...");
-      if (!user) setFreeRunsUsed((n) => n + 1);
+      if (!user) setFreeRunsUsed((n) => {
+        const next = n + 1;
+        try { localStorage.setItem("webmcp_free_runs", String(next)); } catch { /* */ }
+        return next;
+      });
       await agentSingleton.run({ ...config, apiKey: "" }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;
