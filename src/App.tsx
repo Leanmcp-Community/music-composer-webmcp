@@ -19,7 +19,7 @@ const audioEngine = new AudioEngine();
 
 const DEFAULT_CONFIG: AgentRunConfig = {
   objective:
-    "Compose a melancholic jazz nocturne in D minor, 3/4 time, 72 BPM. Use piano for the melody and strings for lush chords. At least 16 bars.",
+    "Happy summer pop song",
   provider: DEFAULT_MODEL.provider,
   model: DEFAULT_MODEL.model,
   apiKey: "",
@@ -97,7 +97,7 @@ async function deflateBytes(data: Uint8Array): Promise<Uint8Array> {
   writer.close();
   const reader = cs.readable.getReader();
   const chunks: Uint8Array[] = [];
-  for (;;) {
+  for (; ;) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(new Uint8Array(value));
@@ -116,7 +116,7 @@ async function inflateBytes(data: Uint8Array): Promise<Uint8Array> {
   writer.close();
   const reader = ds.readable.getReader();
   const chunks: Uint8Array[] = [];
-  for (;;) {
+  for (; ;) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(new Uint8Array(value));
@@ -611,7 +611,7 @@ export default function App() {
     <div className="app-shell">
       <section className="stage-panel">
         <div className="stage-header">
-          <div className="badge">WebMCP Music Sequencer</div>
+          <div className="badge">WebMCP Music Composer</div>
           <div className="scene">{snapshot.scene}</div>
         </div>
 
@@ -648,7 +648,7 @@ export default function App() {
 
       <aside className="control-panel">
         <section className="panel hero">
-          <h1>Autonomous MCP Composer</h1>
+          <h1>WebMCP Music Composer</h1>
           <p>
             An AI agent composes a full piece via WebMCP tool calls. Watch notes appear on the piano roll,
             then press Play to hear the result.
@@ -673,7 +673,7 @@ export default function App() {
         </section>
 
         <section className="panel">
-          <h2>Composition Objective</h2>
+          <h2>Composition Prompt</h2>
 
           <label className="field">
             <span>Describe the piece</span>
