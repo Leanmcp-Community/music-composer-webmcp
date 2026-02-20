@@ -890,6 +890,8 @@ export class AudioEngine {
   private sortedNotes: MusicNote[] = [];
   private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
   private schedulerIndex = 0;
+  private loopRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  private crossfadeTimer: ReturnType<typeof setTimeout> | null = null;
 
   private ensureContext(): { ctx: AudioContext; master: GainNode; reverbBus: { input: GainNode; output: GainNode } } {
     if (!this.ctx || this.ctx.state === "closed") {
@@ -911,6 +913,10 @@ export class AudioEngine {
     if (this.schedulerTimer !== null) {
       clearTimeout(this.schedulerTimer);
       this.schedulerTimer = null;
+    }
+    if (this.loopRestartTimer !== null) {
+      clearTimeout(this.loopRestartTimer);
+      this.loopRestartTimer = null;
     }
     this.schedulerIndex = 0;
 
@@ -996,6 +1002,24 @@ export class AudioEngine {
       if (track.delayParams) {
         postGain = applyDelay(ctx, postGain, track.delayParams);
       }
+      if (track.eq) {
+        if (track.eq.highpassHz) {
+          const hp = ctx.createBiquadFilter();
+          hp.type = "highpass";
+          hp.frequency.value = track.eq.highpassHz;
+          hp.Q.value = 0.5;
+          postGain.connect(hp);
+          postGain = hp;
+        }
+        if (track.eq.lowpassHz) {
+          const lp = ctx.createBiquadFilter();
+          lp.type = "lowpass";
+          lp.frequency.value = track.eq.lowpassHz;
+          lp.Q.value = 0.5;
+          postGain.connect(lp);
+          postGain = lp;
+        }
+      }
       postGain.connect(p);
       p.connect(master);
 
@@ -1079,8 +1103,23 @@ export class AudioEngine {
     };
     scheduleChunk();
 
-    const endTime = startTime + this.totalBeats * secondsPerBeat + 2.0;
+    const loopEndTime = startTime + this.totalBeats * secondsPerBeat;
+    const endTime = loopEndTime + 0.5;
     let noteSearchStart = 0;
+
+    if (this.looping) {
+      const msUntilLoopEnd = (loopEndTime - ctx.currentTime) * 1000;
+      const msUntilRestart = Math.max(0, msUntilLoopEnd - 120);
+      this.loopRestartTimer = setTimeout(() => {
+        if (!this.isPlaying || this.playId !== thisPlayId || !this.currentComposition) return;
+        const comp = this.currentComposition;
+        const muted = this.lastMutedTracks;
+        this.cleanupPlayback();
+        this.isPlaying = false;
+        if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
+        this.play(comp, muted, { loop: true });
+      }, msUntilRestart);
+    }
 
     const tick = () => {
       if (!this.isPlaying || !this.ctx || this.playId !== thisPlayId) return;
@@ -1108,14 +1147,7 @@ export class AudioEngine {
         this.onActiveNotesUpdate(active);
       }
 
-      if (this.ctx.currentTime >= endTime) {
-        if (this.looping && this.currentComposition) {
-          this.cleanupPlayback();
-          this.isPlaying = false;
-          if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
-          this.play(this.currentComposition, this.lastMutedTracks, { loop: true });
-          return;
-        }
+      if (!this.looping && this.ctx.currentTime >= endTime) {
         this.cleanupPlayback();
         this.isPlaying = false;
         if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
@@ -1127,6 +1159,35 @@ export class AudioEngine {
     };
 
     this.animFrameId = requestAnimationFrame(tick);
+  }
+
+  playWithCrossfade(composition: CompositionState, mutedTracks?: Set<string>, options?: { loop?: boolean }): void {
+    if (!this.isPlaying) {
+      this.play(composition, mutedTracks, options);
+      return;
+    }
+    if (this.crossfadeTimer !== null) {
+      clearTimeout(this.crossfadeTimer);
+      this.crossfadeTimer = null;
+    }
+    const FADE_MS = 220;
+    const FADE_S = FADE_MS / 1000;
+    if (this.master && this.ctx) {
+      const now = this.ctx.currentTime;
+      this.master.gain.cancelScheduledValues(now);
+      this.master.gain.setValueAtTime(this.master.gain.value, now);
+      this.master.gain.linearRampToValueAtTime(0, now + FADE_S);
+    }
+    this.crossfadeTimer = setTimeout(() => {
+      this.crossfadeTimer = null;
+      this.play(composition, mutedTracks, options);
+      if (this.master && this.ctx) {
+        const now = this.ctx.currentTime;
+        this.master.gain.cancelScheduledValues(now);
+        this.master.gain.setValueAtTime(0, now);
+        this.master.gain.linearRampToValueAtTime(0.72, now + FADE_S);
+      }
+    }, FADE_MS);
   }
 
   updateMutedTracks(mutedTracks: Set<string>): void {
@@ -1144,6 +1205,10 @@ export class AudioEngine {
     if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
+    }
+    if (this.crossfadeTimer !== null) {
+      clearTimeout(this.crossfadeTimer);
+      this.crossfadeTimer = null;
     }
     this.cleanupPlayback();
     this.currentComposition = null;

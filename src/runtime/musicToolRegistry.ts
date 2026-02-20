@@ -1,5 +1,5 @@
 import type { ModelContextTool } from "../types";
-import type { CompositionState, DelayParams, DistortionParams, DistortionType, InstrumentName, LfoParams, MusicNote, MusicTrack, SynthParams } from "../types";
+import type { CompositionState, DelayParams, DistortionParams, DistortionType, EqParams, InstrumentName, LfoParams, MusicNote, MusicTrack, SynthParams } from "../types";
 import { buildDefaultTrack } from "./audioEngine";
 
 const INSTRUMENT_NAMES: InstrumentName[] = ["piano", "strings", "bass", "pad", "pluck", "marimba", "organ", "flute", "bell", "synth_lead", "kick", "snare", "hihat", "clap", "guitar", "electric_piano"];
@@ -869,6 +869,32 @@ export function createMusicTools(
         }
 
         return { added: addedCount, track: trackName, pattern: patternName, repeats: repeatCount };
+      }
+    },
+
+    {
+      name: "set_eq",
+      description: "Set a high-pass and/or low-pass EQ filter on a track to reduce frequency masking. Use highpass on pad/strings (200Hz) to remove muddy low-end. Use lowpass on bass (500Hz) to keep it focused. Use highpass on hihat (6000Hz) for crispness.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          track:       { type: "string", description: "Track name" },
+          highpass_hz: { type: "number", description: "High-pass filter cutoff in Hz. Removes frequencies below this. E.g. 200 for pad/strings, 6000 for hihat." },
+          lowpass_hz:  { type: "number", description: "Low-pass filter cutoff in Hz. Removes frequencies above this. E.g. 500 for bass." }
+        },
+        required: ["track"]
+      },
+      execute: ({ track, highpass_hz, lowpass_hz }) => {
+        const trackName = normalizeTrackName(track);
+        if (!state.tracks[trackName]) {
+          return { error: `Track "${trackName}" not found.` };
+        }
+        const eq: EqParams = {};
+        if (highpass_hz !== undefined && highpass_hz !== null) eq.highpassHz = Math.max(20, Number(highpass_hz));
+        if (lowpass_hz !== undefined && lowpass_hz !== null) eq.lowpassHz = Math.min(20000, Number(lowpass_hz));
+        state.tracks[trackName].eq = eq;
+        onStateChanged();
+        return { track: trackName, eq };
       }
     },
 

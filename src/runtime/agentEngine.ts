@@ -75,8 +75,14 @@ STEP 5 — HUMANIZE:
 Call humanize_track on the melody track and bass track (timing_amount=0.25, velocity_amount=0.35).
 Do NOT humanize percussion tracks.
 
-STEP 6 — ADD EFFECTS (selective, 1-3 tracks only):
-set_distortion, set_delay, set_lfo where appropriate.
+STEP 6 — ADD EFFECTS + EQ:
+a) Effects (1-3 tracks only): set_distortion, set_delay, set_lfo where appropriate.
+b) EQ (apply to ALL tracks for a clean mix):
+   set_eq(track='pad', highpass_hz=200)      — removes muddy low-end from pad
+   set_eq(track='strings', highpass_hz=200)  — removes muddy low-end from strings
+   set_eq(track='bass', lowpass_hz=500)      — keeps bass focused, no harshness
+   set_eq(track='hihat', highpass_hz=6000)   — crisp, airy hihat
+   set_eq(track='piano', highpass_hz=80)     — removes sub rumble from piano
 
 STEP 7 — verify_composition → fix issues → [DONE]
 If verify_composition reports out-of-key notes (<80% in-key), call get_scale_notes to check your key, identify wrong notes, and fix them with clear_track + re-add.
@@ -102,13 +108,13 @@ HARMONY RULES:
 - Chords use 3 notes: root + third + fifth (e.g. Am = A3 + C4 + E4).
 - In verse: play chords as whole notes (one chord per 4 beats, duration=4).
 - In chorus: play chords as half notes (one chord per 2 beats, duration=2) for energy.
-- Strings/pad: use long sustained notes, high reverb (0.5-0.7), slight pan (±0.2).
+- Strings/pad: use long sustained notes, high reverb (0.5-0.65), pan ±0.2–0.35. NEVER louder than melody.
 
 BASS RULES:
 - Bass plays root note on beat 1 of each chord change (C2-C3 range).
 - Add a passing note on beat 3 (fifth of the chord, or walk up to next root).
 - Keep bass simple and locked to the kick drum pattern.
-- Bass volume: 0.85-0.95, reverb: 0, pan: 0.
+- Bass volume: 0.85-0.92, reverb: 0, pan: 0. NEVER set bass reverb above 0.05.
 
 PERCUSSION (for any genre with a beat):
 Use add_percussion_bar — fills entire bars in one call:
@@ -116,7 +122,7 @@ Use add_percussion_bar — fills entire bars in one call:
   add_percussion_bar(track='snare', pattern='snare', bar=1, bars=20)
   add_percussion_bar(track='hihat', pattern='hihat', bar=1, bars=20)
 Patterns: kick, snare, hihat, clap, kick_snare, four_on_floor (EDM), trap_hihat (trap)
-Volumes: kick=0.92, snare=0.85, hihat=0.60. Reverb: kick=0, snare=0.05, hihat=0.
+Volumes: kick=0.90, snare=0.82, hihat=0.48. Reverb: kick=0, snare=0.05, hihat=0.
 
 SECTION CONTRAST (critical for good music):
 - INTRO (bars 1-4): Only 1-2 tracks. Sparse. Just bass + pad, or just piano. No full drums yet.
@@ -124,34 +130,56 @@ SECTION CONTRAST (critical for good music):
 - CHORUS (bars 13-20): EVERYTHING comes in. Full drums (kick+snare+hihat), full harmony, melody at its highest. This should feel like a release of tension.
 - OUTRO (bars 21-24): Strip back to 1-2 tracks. Mirror the intro. Fade out feel.
 
-MIXING:
-- bass: volume=0.90, reverb=0, pan=0
-- kick: volume=0.92, reverb=0, pan=0
-- snare: volume=0.85, reverb=0.05, pan=0
-- hihat: volume=0.60, reverb=0, pan=0.1
-- strings/pad: volume=0.60, reverb=0.55, pan=±0.25
-- melody (piano/guitar/pluck): volume=0.75, reverb=0.25, pan=±0.1
-- synth_lead: volume=0.50, reverb=0.30, pan=0
+MIXING — FREQUENCY SEPARATION (critical for a clean mix):
+The goal is that every instrument occupies its own frequency space. Instruments in the same frequency range MUST have different volumes so they don't mask each other.
+
+VOLUME HIERARCHY (loudest to quietest):
+  1. Kick + Bass (low end, 20–250Hz): kick=0.90, bass=0.88. These anchor the mix.
+  2. Melody lead (midrange, 250Hz–4kHz): volume=0.78–0.82. The most important element — must cut through.
+  3. Snare (upper mid, 200Hz–8kHz): volume=0.80.
+  4. Harmony (strings/pad, 200Hz–6kHz): volume=0.50–0.58. ALWAYS quieter than melody. They support, not compete.
+  5. Hihat (high freq, 6kHz+): volume=0.45–0.50. Subtle texture only.
+  6. Synth lead / pluck / bell: volume=0.52–0.62, reverb=0.20–0.30.
+
+ANTI-MASKING RULES (follow strictly):
+- Pad and strings MUST be at least 0.20 lower volume than the melody instrument.
+- Bass reverb MUST be 0 (reverb on bass makes it muddy and masks the kick).
+- Kick and bass should NOT both be at maximum — if kick=0.90, set bass=0.85 or vice versa.
+- Hihat MUST be quieter than snare (hihat ≤ 0.50, snare ≥ 0.78).
+- Never set more than 2 tracks above volume=0.85 simultaneously.
+
+VELOCITY LAYERING (adds realism and separation):
+- Background pads/strings: velocity=55–75 (soft, supportive)
+- Harmony chords (piano/guitar): velocity=70–85 (medium)
+- Melody notes: velocity=85–105 (prominent, expressive)
+- Bass root notes: velocity=90–105, passing notes: velocity=75–85
+- Kick: velocity=105–115. Snare: velocity=88–100. Hihat: velocity=55–70.
+
+SECTION VOLUME DYNAMICS (use set_track_volume to create energy arc):
+- Verse: reduce pad/strings to 0.45, melody to 0.72
+- Chorus: raise pad/strings to 0.55, melody to 0.80 — the lift should be felt
+- This creates the "drop" feeling even without adding new instruments
 
 EFFECTS (use on 1-3 tracks only):
-- set_delay on synth_lead or pluck: time=0.375 (dotted-eighth at 120bpm), feedback=0.4, mix=0.35
-- set_distortion overdrive on bass: drive=0.4, mix=0.35, output_gain=0.75
-- set_lfo tremolo on electric_piano: rate=5, depth=0.25 (classic Rhodes feel)
-- set_lfo vibrato on strings or flute: rate=5.5, depth=0.2
+- set_delay on synth_lead or pluck: time=0.375 (dotted-eighth at 120bpm), feedback=0.35, mix=0.28
+- set_distortion overdrive on bass: drive=0.35, mix=0.30, output_gain=0.80
+- set_lfo tremolo on electric_piano: rate=5, depth=0.20 (classic Rhodes feel)
+- set_lfo vibrato on strings or flute: rate=5.5, depth=0.15
 
 GENRE QUICK REFERENCE:
-- Pop (Max Martin style): piano or electric_piano + strings + bass + kick+snare+hihat. Key: major. BPM: 100-120. Chorus melody goes HIGH.
-- Emotional pop/ballad: piano + strings + bass. No drums or very soft. BPM: 70-90. Lots of reverb on strings.
-- EDM/dance pop: synth_lead + pad + bass + four_on_floor kick + snare + hihat. Key: minor. BPM: 120-128. Delay on lead.
-- Lo-fi hip hop: electric_piano + bass + kick + snare + trap_hihat + pluck. BPM: 75-90. Tremolo on electric_piano.
-- Bedroom pop (Billie Eilish): sparse kick + snare (no hihat), bass with overdrive, piano or electric_piano. BPM: 70-85. Minimal.
-- R&B/soul: electric_piano + bass + strings + kick + snare. BPM: 85-100. Tremolo on electric_piano.
-- Acoustic/folk: guitar + bass + strings. No drums. BPM: 90-110.
+- Pop (Max Martin style): piano or electric_piano + strings + bass + kick+snare+hihat. Key: major. BPM: 100-120. Chorus melody goes HIGH. Strings at 0.50, melody at 0.80.
+- Emotional pop/ballad: piano + strings + bass. No drums or very soft. BPM: 70-90. Lots of reverb on strings (0.60), piano dry (0.20).
+- EDM/dance pop: synth_lead + pad + bass + four_on_floor kick + snare + hihat. Key: minor. BPM: 120-128. Delay on lead. Pad at 0.48, lead at 0.60.
+- Lo-fi hip hop: electric_piano + bass + kick + snare + trap_hihat + pluck. BPM: 75-90. Tremolo on electric_piano. Electric piano at 0.65, pluck at 0.52.
+- Bedroom pop (Billie Eilish): sparse kick + snare (no hihat), bass with overdrive, piano or electric_piano. BPM: 70-85. Minimal. Bass prominent at 0.88.
+- R&B/soul: electric_piano + bass + strings + kick + snare. BPM: 85-100. Tremolo on electric_piano. Strings at 0.48, electric_piano at 0.75.
+- Acoustic/folk: guitar + bass + strings. No drums. BPM: 90-110. Guitar at 0.78, strings at 0.52.
 
 TECHNICAL:
 - beat is 1-indexed. Bar 1 = beat 1. In 4/4: bar N starts at beat (N-1)*4+1.
 - Percussion pitch is ignored — use C2 as convention.
 - Use add_notes with large arrays (entire track in one call). Never add_note one at a time.
+- set_eq takes highpass_hz and/or lowpass_hz — apply after set_instrument, before adding notes.
 - Available tools: ${safeToolNames.join(", ")}
 
 When verify_composition returns ready: true, output [DONE].`;

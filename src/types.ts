@@ -131,6 +131,11 @@ export interface LfoParams {
   depth: number;
 }
 
+export interface EqParams {
+  highpassHz?: number;
+  lowpassHz?: number;
+}
+
 export interface MusicTrack {
   name: string;
   instrument: InstrumentName;
@@ -141,6 +146,7 @@ export interface MusicTrack {
   distortion?: DistortionParams;
   delayParams?: DelayParams;
   lfoParams?: LfoParams;
+  eq?: EqParams;
 }
 
 export interface CompositionState {

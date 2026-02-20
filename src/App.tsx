@@ -248,7 +248,7 @@ export default function App() {
             if (layeredRestartTimerRef.current) clearTimeout(layeredRestartTimerRef.current);
             layeredRestartTimerRef.current = setTimeout(() => {
               const latest = compositionRef.current;
-              audioEngine.play(
+              audioEngine.playWithCrossfade(
                 snapComposition(latest),
                 mutedTracksRef.current,
                 { loop: true }
