@@ -139,6 +139,7 @@ export interface EqParams {
 export interface MusicTrack {
   name: string;
   instrument: InstrumentName;
+  variant?: string;
   volume: number;
   reverb: number;
   pan: number;

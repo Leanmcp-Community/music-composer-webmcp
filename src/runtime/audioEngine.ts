@@ -2,22 +2,32 @@ import { Mp3Encoder } from "@breezystack/lamejs";
 import Soundfont from "soundfont-player";
 import type { CompositionState, DelayParams, DistortionParams, DistortionType, InstrumentName, LfoParams, MusicNote, MusicTrack, SynthParams } from "../types";
 
-const GM_INSTRUMENT_MAP: Partial<Record<InstrumentName, string>> = {
-  piano:          "acoustic_grand_piano",
-  electric_piano: "electric_piano_1",
-  strings:        "string_ensemble_1",
-  pad:            "pad_2_warm",
-  bass:           "electric_bass_finger",
-  guitar:         "acoustic_guitar_nylon",
-  pluck:          "pizzicato_strings",
-  marimba:        "marimba",
-  organ:          "rock_organ",
-  flute:          "flute",
-  bell:           "tubular_bells",
-  synth_lead:     "lead_2_sawtooth",
+const GM_INSTRUMENT_VARIANTS: Partial<Record<InstrumentName, string[]>> = {
+  piano:          ["acoustic_grand_piano", "bright_acoustic_piano", "honkytonk_piano", "electric_grand_piano"],
+  electric_piano: ["electric_piano_1", "electric_piano_2", "harpsichord", "clavi"],
+  strings:        ["string_ensemble_1", "string_ensemble_2", "synth_strings_1", "synth_strings_2", "violin", "viola", "cello"],
+  pad:            ["pad_2_warm", "pad_1_new_age", "pad_3_polysynth", "pad_4_choir", "pad_5_bowed", "pad_6_metallic", "pad_7_halo", "pad_8_sweep"],
+  bass:           ["electric_bass_finger", "electric_bass_pick", "fretless_bass", "slap_bass_1", "acoustic_bass", "synth_bass_1", "synth_bass_2"],
+  guitar:         ["acoustic_guitar_nylon", "acoustic_guitar_steel", "electric_guitar_jazz", "electric_guitar_clean", "electric_guitar_muted", "overdriven_guitar", "distortion_guitar"],
+  pluck:          ["pizzicato_strings", "harp", "sitar", "banjo", "shamisen", "koto"],
+  marimba:        ["marimba", "xylophone", "vibraphone", "glockenspiel", "tubular_bells", "dulcimer"],
+  organ:          ["rock_organ", "church_organ", "reed_organ", "accordion", "harmonica", "drawbar_organ"],
+  flute:          ["flute", "recorder", "pan_flute", "blown_bottle", "shakuhachi", "whistle", "ocarina"],
+  bell:           ["tubular_bells", "music_box", "steel_drums", "tinkle_bell", "agogo", "woodblock"],
+  synth_lead:     ["lead_2_sawtooth", "lead_1_square", "lead_3_calliope", "lead_4_chiff", "lead_5_charang", "lead_6_voice", "lead_7_fifths", "lead_8_bass_lead"],
 };
 
-const ALL_SAMPLED_INSTRUMENTS = Object.keys(GM_INSTRUMENT_MAP) as InstrumentName[];
+function resolveGmName(instrument: InstrumentName, variant?: string): string | undefined {
+  const variants = GM_INSTRUMENT_VARIANTS[instrument];
+  if (!variants || variants.length === 0) return undefined;
+  if (variant) {
+    const match = variants.find((v) => v === variant);
+    if (match) return match;
+  }
+  return variants[0];
+}
+
+const ALL_SAMPLED_INSTRUMENTS = Object.keys(GM_INSTRUMENT_VARIANTS) as InstrumentName[];
 
 type SoundfontPlayerInstance = Awaited<ReturnType<typeof Soundfont.instrument>>;
 
@@ -25,9 +35,10 @@ const soundfontCache = new Map<string, Promise<SoundfontPlayerInstance>>();
 
 function getSoundfontPlayer(
   ctx: AudioContext | OfflineAudioContext,
-  instrumentName: InstrumentName
+  instrumentName: InstrumentName,
+  variant?: string
 ): Promise<SoundfontPlayerInstance> | null {
-  const gmName = GM_INSTRUMENT_MAP[instrumentName];
+  const gmName = resolveGmName(instrumentName, variant);
   if (!gmName) return null;
   const key = `${ctx === (globalThis as Record<string, unknown>).__sfCtx ? "live" : "offline"}_${gmName}`;
   if (!soundfontCache.has(key)) {
@@ -43,7 +54,8 @@ export async function preloadAllInstruments(ctx: AudioContext): Promise<void> {
   (globalThis as Record<string, unknown>).__sfCtx = ctx;
   await Promise.all(
     ALL_SAMPLED_INSTRUMENTS.map((name) => {
-      const gmName = GM_INSTRUMENT_MAP[name]!;
+      const gmName = resolveGmName(name);
+      if (!gmName) return Promise.resolve(undefined as unknown as SoundfontPlayerInstance);
       const key = `live_${gmName}`;
       if (!soundfontCache.has(key)) {
         soundfontCache.set(key, Soundfont.instrument(ctx, gmName, { soundfont: "MusyngKite", format: "mp3" }));
@@ -980,7 +992,7 @@ export class AudioEngine {
     const usedInstruments = new Set(
       composition.notes
         .map((n) => composition.tracks[n.track]?.instrument)
-        .filter((i): i is InstrumentName => !!i && !!GM_INSTRUMENT_MAP[i as InstrumentName])
+        .filter((i): i is InstrumentName => !!i && !!resolveGmName(i as InstrumentName))
     );
     await Promise.all([...usedInstruments].map((inst) => getSoundfontPlayer(ctx, inst)));
 
@@ -1052,7 +1064,7 @@ export class AudioEngine {
     this.trackSoundfontPlayers.clear();
     const trackPlayerPromises: Promise<void>[] = [];
     for (const [trackName, track] of Object.entries(composition.tracks)) {
-      const gmName = GM_INSTRUMENT_MAP[track.instrument];
+      const gmName = resolveGmName(track.instrument, track.variant);
       if (!gmName) continue;
       const chain = trackChains.get(trackName);
       if (!chain) continue;
@@ -1192,6 +1204,17 @@ export class AudioEngine {
     }, FADE_MS);
   }
 
+  getIsPlaying(): boolean {
+    return this.isPlaying;
+  }
+
+  updateComposition(composition: CompositionState): void {
+    this.currentComposition = composition;
+    this.totalBeats = composition.totalBeats;
+    this.bpm = composition.bpm;
+    this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
+  }
+
   updateMutedTracks(mutedTracks: Set<string>): void {
     this.lastMutedTracks = mutedTracks;
     for (const [name, gainNode] of this.trackGains) {
@@ -1288,12 +1311,12 @@ async function renderToBuffer(
   const usedInstruments = new Set(
     notesToRender
       .map((n) => composition.tracks[n.track]?.instrument)
-      .filter((i): i is InstrumentName => !!i && !!GM_INSTRUMENT_MAP[i])
+      .filter((i): i is InstrumentName => !!i && !!resolveGmName(i))
   );
 
   const localPlayers = new Map<string, SoundfontPlayerInstance>();
   await Promise.all([...usedInstruments].map(async (inst) => {
-    const gmName = GM_INSTRUMENT_MAP[inst]!;
+    const gmName = resolveGmName(inst)!;
     const player = await Soundfont.instrument(ctx, gmName, { soundfont: "MusyngKite", format: "mp3" });
     localPlayers.set(inst, player);
   }));

@@ -248,13 +248,14 @@ export default function App() {
             if (layeredRestartTimerRef.current) clearTimeout(layeredRestartTimerRef.current);
             layeredRestartTimerRef.current = setTimeout(() => {
               const latest = compositionRef.current;
-              audioEngine.playWithCrossfade(
-                snapComposition(latest),
-                mutedTracksRef.current,
-                { loop: true }
-              );
-              setIsPlaying(true);
-              setPlayheadBeat(0);
+              const snap = snapComposition(latest);
+              if (audioEngine.getIsPlaying()) {
+                audioEngine.updateComposition(snap);
+              } else {
+                audioEngine.playWithCrossfade(snap, mutedTracksRef.current, { loop: true });
+                setIsPlaying(true);
+                setPlayheadBeat(0);
+              }
             }, 350);
           }
         }

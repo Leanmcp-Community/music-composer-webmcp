@@ -348,29 +348,34 @@ export function createMusicTools(
 
     {
       name: "set_instrument",
-      description: "Assign a synthesized instrument to a named track. Instruments: piano, strings, bass, pad, pluck, marimba, organ, flute, bell, synth_lead.",
+      description: "Assign an instrument to a named track. Use 'variant' to pick a specific soundfont timbre within the instrument family — this is the primary way to get diverse sounds. Instruments and their variants:\n- piano: acoustic_grand_piano, bright_acoustic_piano, honkytonk_piano, electric_grand_piano\n- electric_piano: electric_piano_1, electric_piano_2, harpsichord, clavi\n- strings: string_ensemble_1, string_ensemble_2, synth_strings_1, synth_strings_2, violin, viola, cello\n- pad: pad_2_warm, pad_1_new_age, pad_3_polysynth, pad_4_choir, pad_5_bowed, pad_6_metallic, pad_7_halo, pad_8_sweep\n- bass: electric_bass_finger, electric_bass_pick, fretless_bass, slap_bass_1, acoustic_bass, synth_bass_1, synth_bass_2\n- guitar: acoustic_guitar_nylon, acoustic_guitar_steel, electric_guitar_jazz, electric_guitar_clean, electric_guitar_muted, overdriven_guitar, distortion_guitar\n- pluck: pizzicato_strings, harp, sitar, banjo, shamisen, koto\n- marimba: marimba, xylophone, vibraphone, glockenspiel, tubular_bells, dulcimer\n- organ: rock_organ, church_organ, reed_organ, accordion, harmonica, drawbar_organ\n- flute: flute, recorder, pan_flute, blown_bottle, shakuhachi, whistle, ocarina\n- bell: tubular_bells, music_box, steel_drums, tinkle_bell, agogo, woodblock\n- synth_lead: lead_2_sawtooth, lead_1_square, lead_3_calliope, lead_4_chiff, lead_5_charang, lead_6_voice, lead_7_fifths, lead_8_bass_lead",
       inputSchema: {
         type: "object",
         properties: {
           track: { type: "string", description: "Track name, e.g. 'melody', 'chords', 'bass'" },
           instrument: {
             type: "string",
-            enum: ["piano", "strings", "bass", "pad", "pluck", "marimba", "organ", "flute", "bell", "synth_lead"],
-            description: "Instrument timbre"
+            enum: ["piano", "electric_piano", "strings", "pad", "bass", "guitar", "pluck", "marimba", "organ", "flute", "bell", "synth_lead"],
+            description: "Instrument family"
+          },
+          variant: {
+            type: "string",
+            description: "Specific soundfont variant within the instrument family. See description for full list. If omitted, uses the default for that family."
           }
         },
         required: ["track", "instrument"]
       },
-      execute: ({ track, instrument }) => {
+      execute: ({ track, instrument, variant }) => {
         const trackName = normalizeTrackName(track);
         const inst = normalizeInstrument(instrument);
         const existing = state.tracks[trackName];
         state.tracks[trackName] = existing
-          ? { ...existing, instrument: inst }
+          ? { ...existing, instrument: inst, variant: variant ? String(variant) : existing.variant }
           : buildDefaultTrack(inst);
         state.tracks[trackName].name = trackName;
+        if (variant) state.tracks[trackName].variant = String(variant);
         onStateChanged();
-        return { track: trackName, instrument: inst };
+        return { track: trackName, instrument: inst, variant: state.tracks[trackName].variant ?? null };
       }
     },
 

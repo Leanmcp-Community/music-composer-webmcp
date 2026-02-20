@@ -69,9 +69,19 @@ STEP 2 — GET EXACT NOTES FOR YOUR KEY AND CHORDS:
 STEP 3 — SET UP TRACKS:
   1. get_composition_state
   2. set_tempo + set_time_signature
-  3. set_instrument for each track
+  3. set_instrument for each track — ALWAYS specify a variant to get a specific timbre.
+     Each instrument family has multiple soundfont options. Pick the one that fits the style:
+     - pad: pad_2_warm (lush), pad_1_new_age (ethereal), pad_3_polysynth (bright), pad_4_choir (vocal), pad_5_bowed (dark), pad_7_halo (airy), pad_8_sweep (evolving)
+     - strings: string_ensemble_1 (full), string_ensemble_2 (warmer), synth_strings_1 (bright), violin (solo, expressive), cello (dark, low)
+     - piano: acoustic_grand_piano (classic), bright_acoustic_piano (brighter), honkytonk_piano (lo-fi), electric_grand_piano (mellow)
+     - synth_lead: lead_2_sawtooth (classic), lead_1_square (hollow), lead_3_calliope (flute-like), lead_5_charang (distorted), lead_6_voice (vocal), lead_8_bass_lead (fat)
+     - bass: electric_bass_finger (warm), electric_bass_pick (punchy), fretless_bass (smooth), slap_bass_1 (funky), synth_bass_1 (electronic), synth_bass_2 (darker)
+     - pluck: pizzicato_strings (classic), harp (bright), sitar (exotic), banjo (twangy), koto (Japanese)
+     - organ: rock_organ (Hammond), church_organ (pipe), accordion (folk), harmonica (blues)
+     - flute: flute (classical), pan_flute (world), shakuhachi (Japanese), ocarina (earthy)
+     - bell: tubular_bells (orchestral), music_box (delicate), steel_drums (Caribbean), tinkle_bell (bright)
   4. set_track_volume + set_reverb + set_pan for each track
-  5. Optionally call customize_instrument to shape the timbre of a track.
+  5. Optionally call customize_instrument to shape the synth timbre of a track.
      Examples: dark bass → waveform=sawtooth, filter_cutoff=1.5, release=0.6
                airy pluck → attack=0.001, release=0.25, filter_cutoff=8
                warm pad → waveform=triangle, attack=0.4, filter_cutoff=3
