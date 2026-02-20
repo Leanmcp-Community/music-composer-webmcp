@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { saveShare, loadShare } from "./runtime/shareService";
 import { PianoRoll, type PianoRollHandle } from "./components/PianoRoll";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { AudioEngine, exportMp3, exportStems } from "./runtime/audioEngine";
@@ -146,16 +147,19 @@ async function decodeComposition(value: string): Promise<CompositionState> {
   return JSON.parse(new TextDecoder().decode(bytes)) as CompositionState;
 }
 
-function readCompHash(): string | null {
+function readShareHash(): { type: "id"; value: string } | { type: "comp"; value: string } | null {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
+  const id = params.get("id");
+  if (id && id.trim().length > 0) return { type: "id", value: id.trim() };
   const comp = params.get("comp");
-  return comp && comp.trim().length > 0 ? comp : null;
+  if (comp && comp.trim().length > 0) return { type: "comp", value: comp.trim() };
+  return null;
 }
 
-function buildCompHash(encoded: string): string {
+function buildShareHash(id: string): string {
   const params = new URLSearchParams();
-  params.set("comp", encoded);
+  params.set("id", id);
   return `#${params.toString()}`;
 }
 
@@ -258,21 +262,39 @@ export default function App() {
 
     runtimeSingleton.registerTools(tools);
 
-    const compHash = readCompHash();
-    if (compHash) {
-      decodeComposition(compHash).then((loaded) => {
-        const comp = compositionRef.current;
-        comp.bpm = loaded.bpm;
-        comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
-        comp.timeSignatureDenominator = loaded.timeSignatureDenominator;
-        comp.tracks = loaded.tracks;
-        comp.notes = loaded.notes;
-        comp.totalBeats = loaded.totalBeats;
-        setComposition({ ...comp });
-        setStatusMessage("Shared composition loaded — press Play");
-      }).catch(() => {
-        setStatusMessage("Invalid share link.");
-      });
+    const shareHash = readShareHash();
+    if (shareHash) {
+      if (shareHash.type === "id") {
+        setStatusMessage("Loading shared composition...");
+        loadShare(shareHash.value).then((payload) => {
+          if (!payload) { setStatusMessage("Share link not found."); return; }
+          const comp = compositionRef.current;
+          const loaded = payload.composition;
+          comp.bpm = loaded.bpm;
+          comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
+          comp.timeSignatureDenominator = loaded.timeSignatureDenominator;
+          comp.tracks = loaded.tracks;
+          comp.notes = loaded.notes;
+          comp.totalBeats = loaded.totalBeats;
+          setComposition({ ...comp });
+          if (payload.prompt) {
+            setConfig((prev) => ({ ...prev, objective: payload.prompt }));
+          }
+          setStatusMessage(`Shared composition loaded — press Play`);
+        }).catch(() => setStatusMessage("Failed to load share link."));
+      } else {
+        decodeComposition(shareHash.value).then((loaded) => {
+          const comp = compositionRef.current;
+          comp.bpm = loaded.bpm;
+          comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
+          comp.timeSignatureDenominator = loaded.timeSignatureDenominator;
+          comp.tracks = loaded.tracks;
+          comp.notes = loaded.notes;
+          comp.totalBeats = loaded.totalBeats;
+          setComposition({ ...comp });
+          setStatusMessage("Shared composition loaded — press Play");
+        }).catch(() => setStatusMessage("Invalid share link."));
+      }
     }
   }, []);
 
@@ -418,19 +440,35 @@ export default function App() {
       setStatusMessage("No composition to share.");
       return;
     }
-    const encoded = await encodeComposition(comp);
-    const hash = buildCompHash(encoded);
-    const url = `${window.location.origin}${window.location.pathname}${hash}`;
+    setStatusMessage("Saving share link...");
     try {
-      await navigator.clipboard.writeText(url);
-    } catch {
-      /* clipboard blocked */
+      const currentSnapshot = runtimeSingleton.getSnapshot();
+      const replayRun = replaySingleton.getCurrent();
+      const id = await saveShare({
+        composition: snapComposition(comp),
+        prompt: config.objective,
+        model: config.model,
+        endpoint: config.endpoint,
+        metrics: currentSnapshot.metrics,
+        toolCallHistory: replayRun?.toolCalls ?? [],
+        replayRun: replayRun ?? null,
+      });
+      const hash = buildShareHash(id);
+      const url = `${window.location.origin}${window.location.pathname}${hash}`;
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        /* clipboard blocked */
+      }
+      window.history.replaceState(null, "", hash);
+      setShareUrl(url);
+      setStatusMessage("Share link copied");
+      setTimeout(() => setShareUrl(null), 3000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMessage(`Share failed: ${msg}`);
     }
-    window.history.replaceState(null, "", hash);
-    setShareUrl(url);
-    setStatusMessage("Share link copied");
-    setTimeout(() => setShareUrl(null), 3000);
-  }, []);
+  }, [config]);
 
   const handleExportStems = useCallback(async () => {
     const comp = compositionRef.current;
@@ -489,13 +527,21 @@ export default function App() {
   }, []);
 
   const replayFromHash = async () => {
-    const encoded = readCompHash();
-    if (!encoded) {
+    const shareHash = readShareHash();
+    if (!shareHash) {
       setStatusMessage("No share link found in URL.");
       return;
     }
     try {
-      const loaded = await decodeComposition(encoded);
+      let loaded: CompositionState;
+      if (shareHash.type === "id") {
+        const payload = await loadShare(shareHash.value);
+        if (!payload) { setStatusMessage("Share link not found."); return; }
+        loaded = payload.composition;
+        if (payload.prompt) setConfig((prev) => ({ ...prev, objective: payload.prompt }));
+      } else {
+        loaded = await decodeComposition(shareHash.value);
+      }
       const comp = compositionRef.current;
       comp.bpm = loaded.bpm;
       comp.timeSignatureNumerator = loaded.timeSignatureNumerator;
