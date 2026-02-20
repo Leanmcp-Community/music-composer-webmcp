@@ -134,7 +134,7 @@ export async function requestAnthropicMessages(
     tool_choice: { type: "auto" },
     max_tokens: request.maxTokens ?? 4096,
     temperature: 0.25
-  });
+  }); // Anthropic always supports temperature
 
   const send = (url: string) =>
     fetch(url, {
@@ -238,13 +238,14 @@ async function requestOpenAiMessages(request: Omit<AnthropicMessagesRequest, "en
     }).flat(),
   ];
 
+  const supportsTemperature = !request.model.startsWith("gpt-5");
   const body = JSON.stringify({
     model: request.model,
     messages: openAiMessages,
     tools: openAiTools,
     tool_choice: "auto",
     max_tokens: request.maxTokens ?? 4096,
-    temperature: 0.25,
+    ...(supportsTemperature ? { temperature: 0.25 } : {}),
   });
 
   const url = `${DEFAULT_GATEWAY_ORIGIN}/v1/openai/v1/chat/completions`;
