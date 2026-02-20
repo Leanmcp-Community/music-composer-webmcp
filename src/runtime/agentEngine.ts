@@ -97,9 +97,9 @@ Do NOT humanize percussion tracks.
 STEP 6 — ADD EFFECTS + EQ:
 a) Effects: set_distortion, set_delay, set_lfo — use where they serve the style.
 b) EQ for frequency separation — apply to any track that benefits:
-   Sustained/harmonic tracks (pad, strings, piano): set_eq(highpass_hz=80–200)
-   Bass: set_eq(lowpass_hz=400–600)
-   Hihat/clap: set_eq(highpass_hz=4000–8000)
+   Sustained/harmonic tracks (pad, strings, piano): set_eq(highpassHz=80–200)
+   Bass: set_eq(lowpassHz=400–600)
+   Hihat/clap: set_eq(highpassHz=4000–8000)
 
 STEP 7 — verify_composition → fix issues → [DONE]
 If verify_composition reports out-of-key notes (<80% in-key), call get_scale_notes, identify wrong notes, fix with clear_track + re-add.
@@ -138,6 +138,8 @@ HARMONY RULES:
 - Chords use at minimum root + third + fifth. Add 7ths, 9ths for jazz/R&B color.
 - Harmonic instruments should support the melody, not compete with it — keep them quieter.
 - Long sustained notes work for pads/strings. Rhythmic chops work for guitar/piano in uptempo styles.
+- Pads and strings MUST use sparse, open voicings (max 2-3 notes). Never write dense 4+ note chords for them.
+- Apply \`set_eq\` to pads/strings to cut low-end mud (e.g., highpassHz: 200).
 
 MIXING — FREQUENCY SEPARATION:
 Every instrument must occupy its own frequency space. Instruments in the same range need different volumes.

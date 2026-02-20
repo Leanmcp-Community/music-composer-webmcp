@@ -558,6 +558,32 @@ code {
   pointer-events: none;
 }
 
+.piano-roll-composing-animation {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 48px;
+  margin-bottom: 8px;
+}
+
+.piano-roll-composing-animation .bar {
+  width: 6px;
+  background-color: #9b8cff;
+  border-radius: 3px;
+  animation: equalize 1.2s ease-in-out infinite;
+}
+
+.piano-roll-composing-animation .bar1 { height: 16px; animation-delay: 0.0s; }
+.piano-roll-composing-animation .bar2 { height: 32px; animation-delay: -1.0s; }
+.piano-roll-composing-animation .bar3 { height: 48px; animation-delay: -0.9s; }
+.piano-roll-composing-animation .bar4 { height: 24px; animation-delay: -0.8s; }
+.piano-roll-composing-animation .bar5 { height: 12px; animation-delay: -0.7s; }
+
+@keyframes equalize {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.4); }
+}
+
 .piano-roll-empty-icon {
   opacity: 0.35;
 }

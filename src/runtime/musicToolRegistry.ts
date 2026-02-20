@@ -360,10 +360,24 @@ export function createMusicTools(
           },
           variant: {
             type: "string",
-            description: "Specific soundfont variant within the instrument family. See description for full list. If omitted, uses the default for that family."
+            enum: [
+              "acoustic_grand_piano", "bright_acoustic_piano", "honkytonk_piano", "electric_grand_piano",
+              "electric_piano_1", "electric_piano_2", "harpsichord", "clavi",
+              "string_ensemble_1", "string_ensemble_2", "synth_strings_1", "synth_strings_2", "violin", "viola", "cello",
+              "pad_2_warm", "pad_1_new_age", "pad_3_polysynth", "pad_4_choir", "pad_5_bowed", "pad_6_metallic", "pad_7_halo", "pad_8_sweep",
+              "electric_bass_finger", "electric_bass_pick", "fretless_bass", "slap_bass_1", "acoustic_bass", "synth_bass_1", "synth_bass_2",
+              "acoustic_guitar_nylon", "acoustic_guitar_steel", "electric_guitar_jazz", "electric_guitar_clean", "electric_guitar_muted", "overdriven_guitar", "distortion_guitar",
+              "pizzicato_strings", "harp", "sitar", "banjo", "shamisen", "koto",
+              "marimba", "xylophone", "vibraphone", "glockenspiel", "tubular_bells", "dulcimer",
+              "rock_organ", "church_organ", "reed_organ", "accordion", "harmonica", "drawbar_organ",
+              "flute", "recorder", "pan_flute", "blown_bottle", "shakuhachi", "whistle", "ocarina",
+              "music_box", "steel_drums", "tinkle_bell", "agogo", "woodblock",
+              "lead_2_sawtooth", "lead_1_square", "lead_3_calliope", "lead_4_chiff", "lead_5_charang", "lead_6_voice", "lead_7_fifths", "lead_8_bass_lead"
+            ],
+            description: "Required. Soundfont variant for this instrument. Must match the instrument family chosen above."
           }
         },
-        required: ["track", "instrument"]
+        required: ["track", "instrument", "variant"]
       },
       execute: ({ track, instrument, variant }) => {
         const trackName = normalizeTrackName(track);

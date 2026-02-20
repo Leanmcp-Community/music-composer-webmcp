@@ -237,13 +237,14 @@ interface PianoRollProps {
   activeNotes?: Set<number>;
   mutedTracks: Set<string>;
   onToggleMute: (trackName: string) => void;
+  isAgentRunning?: boolean;
 }
 
 export interface PianoRollHandle {
   centerOnNotes: () => void;
 }
 
-export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute }: PianoRollProps, ref) {
+export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function PianoRoll({ composition, playheadBeat, latestNoteId, isPlaying, activeNotes, mutedTracks, onToggleMute, isAgentRunning }: PianoRollProps, ref) {
   const waterfallCanvasRef = useRef<HTMLCanvasElement>(null);
   const gridCanvasRef = useRef<HTMLCanvasElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -471,19 +472,35 @@ export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function Pi
               <canvas ref={gridCanvasRef} className="piano-roll-grid-canvas" width={gridWidth} height={CANVAS_HEIGHT} />
               {noteCount === 0 && (
                 <div className="piano-roll-empty-state">
-                  <div className="piano-roll-empty-icon">
-                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                      <rect x="4" y="8" width="6" height="32" rx="2" fill="#3a3a5a" />
-                      <rect x="14" y="14" width="6" height="26" rx="2" fill="#3a3a5a" />
-                      <rect x="24" y="10" width="6" height="30" rx="2" fill="#3a3a5a" />
-                      <rect x="34" y="18" width="6" height="22" rx="2" fill="#3a3a5a" />
-                      <rect x="8" y="6" width="4" height="20" rx="1.5" fill="#2a2a48" />
-                      <rect x="18" y="12" width="4" height="16" rx="1.5" fill="#2a2a48" />
-                      <rect x="28" y="8" width="4" height="18" rx="1.5" fill="#2a2a48" />
-                    </svg>
-                  </div>
-                  <p className="piano-roll-empty-text">Awaiting composition</p>
-                  <p className="piano-roll-empty-subtext">Start the agent to begin composing</p>
+                  {isAgentRunning ? (
+                    <>
+                      <div className="piano-roll-composing-animation">
+                        <div className="bar bar1"></div>
+                        <div className="bar bar2"></div>
+                        <div className="bar bar3"></div>
+                        <div className="bar bar4"></div>
+                        <div className="bar bar5"></div>
+                      </div>
+                      <p className="piano-roll-empty-text">Agent is composing...</p>
+                      <p className="piano-roll-empty-subtext">Setting up tracks, tempo, and instruments</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="piano-roll-empty-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                          <rect x="4" y="8" width="6" height="32" rx="2" fill="#3a3a5a" />
+                          <rect x="14" y="14" width="6" height="26" rx="2" fill="#3a3a5a" />
+                          <rect x="24" y="10" width="6" height="30" rx="2" fill="#3a3a5a" />
+                          <rect x="34" y="18" width="6" height="22" rx="2" fill="#3a3a5a" />
+                          <rect x="8" y="6" width="4" height="20" rx="1.5" fill="#2a2a48" />
+                          <rect x="18" y="12" width="4" height="16" rx="1.5" fill="#2a2a48" />
+                          <rect x="28" y="8" width="4" height="18" rx="1.5" fill="#2a2a48" />
+                        </svg>
+                      </div>
+                      <p className="piano-roll-empty-text">Awaiting composition</p>
+                      <p className="piano-roll-empty-subtext">Start the agent to begin composing</p>
+                    </>
+                  )}
                 </div>
               )}
             </div>

@@ -244,20 +244,18 @@ export default function App() {
           const newCount = newTracksWithNotes.size;
           tracksWithNotesRef.current = newTracksWithNotes;
 
-          if (newCount > prevCount || (prevCount === 0 && newCount === 1)) {
-            if (layeredRestartTimerRef.current) clearTimeout(layeredRestartTimerRef.current);
-            layeredRestartTimerRef.current = setTimeout(() => {
-              const latest = compositionRef.current;
-              const snap = snapComposition(latest);
-              if (audioEngine.getIsPlaying()) {
-                audioEngine.updateComposition(snap);
-              } else {
-                audioEngine.playWithCrossfade(snap, mutedTracksRef.current, { loop: true });
-                setIsPlaying(true);
-                setPlayheadBeat(0);
-              }
-            }, 350);
-          }
+          if (layeredRestartTimerRef.current) clearTimeout(layeredRestartTimerRef.current);
+          layeredRestartTimerRef.current = setTimeout(() => {
+            const latest = compositionRef.current;
+            const snap = snapComposition(latest);
+            if (audioEngine.getIsPlaying()) {
+              audioEngine.updateComposition(snap);
+            } else {
+              audioEngine.play(snap, mutedTracksRef.current, { loop: true });
+              setIsPlaying(true);
+              setPlayheadBeat(0);
+            }
+          }, 350);
         }
       },
       () => {
@@ -293,6 +291,9 @@ export default function App() {
           setComposition({ ...comp });
           if (payload.prompt) {
             setConfig((prev) => ({ ...prev, objective: payload.prompt }));
+          }
+          if (payload.metrics && payload.toolCallHistory) {
+            runtimeSingleton.restoreFromShare(payload.metrics, payload.toolCallHistory);
           }
           setStatusMessage(`Shared composition loaded — press Play`);
         }).catch(() => setStatusMessage("Failed to load share link."));
@@ -617,6 +618,7 @@ export default function App() {
           activeNotes={activeNotes}
           mutedTracks={mutedTracks}
           onToggleMute={handleToggleMute}
+          isAgentRunning={isRunning}
         />
 
         <PlaybackControls

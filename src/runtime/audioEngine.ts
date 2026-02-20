@@ -104,7 +104,7 @@ export function midiToPitchName(midi: number): string {
   return `${MIDI_NOTE_NAMES[noteIndex]}${octave}`;
 }
 
-function createReverb(ctx: AudioContext | OfflineAudioContext, decayTime = 1.8): { input: GainNode; output: GainNode } {
+function createReverb(ctx: AudioContext | OfflineAudioContext, decayTime = 2.2): { input: GainNode; output: GainNode } {
   const input = ctx.createGain();
   const output = ctx.createGain();
   output.gain.value = 1;
@@ -115,15 +115,17 @@ function createReverb(ctx: AudioContext | OfflineAudioContext, decayTime = 1.8):
   dry.connect(output);
 
   const wet = ctx.createGain();
-  wet.gain.value = 0.45;
+  wet.gain.value = 0.35; // Lower overall reverb volume to avoid muddiness
 
+  // Pre-delay to separate early reflections from dry signal
   const preDelay = ctx.createDelay(0.1);
-  preDelay.delayTime.value = 0.02;
+  preDelay.delayTime.value = 0.035;
 
-  const combDelays = [0.0297, 0.0371, 0.0411, 0.0437];
-  const combFeedback = Math.min(0.92, 0.7 + decayTime * 0.08);
+  // Schroeder reverberator approximation using comb filters for body and all-pass for diffusion
+  const combDelays = [0.0297, 0.0371, 0.0411, 0.0437, 0.0311, 0.0461];
+  const combFeedback = Math.min(0.95, 0.6 + decayTime * 0.1);
   const merge = ctx.createGain();
-  merge.gain.value = 0.25;
+  merge.gain.value = 0.20;
 
   combDelays.forEach((time) => {
     const delay = ctx.createDelay(0.1);
@@ -132,8 +134,8 @@ function createReverb(ctx: AudioContext | OfflineAudioContext, decayTime = 1.8):
     fb.gain.value = combFeedback;
     const lpf = ctx.createBiquadFilter();
     lpf.type = "lowpass";
-    lpf.frequency.value = 3500;
-    lpf.Q.value = 0.2;
+    lpf.frequency.value = 2800; // Darker reverb tail
+    lpf.Q.value = 0.1;
     preDelay.connect(delay);
     delay.connect(lpf);
     lpf.connect(fb);
@@ -141,16 +143,27 @@ function createReverb(ctx: AudioContext | OfflineAudioContext, decayTime = 1.8):
     lpf.connect(merge);
   });
 
+  // Two stages of all-pass filters for diffusion/smoothness
   const ap1 = ctx.createDelay(0.02);
   ap1.delayTime.value = 0.005;
   const ap1fb = ctx.createGain();
   ap1fb.gain.value = 0.5;
+
+  const ap2 = ctx.createDelay(0.02);
+  ap2.delayTime.value = 0.0017;
+  const ap2fb = ctx.createGain();
+  ap2fb.gain.value = 0.5;
+
   merge.connect(ap1);
   ap1.connect(ap1fb);
   ap1fb.connect(merge);
 
+  ap1.connect(ap2);
+  ap2.connect(ap2fb);
+  ap2fb.connect(ap1);
+
   input.connect(preDelay);
-  ap1.connect(wet);
+  ap2.connect(wet);
   wet.connect(output);
 
   return { input, output };
@@ -283,9 +296,10 @@ function synthesizeNoteSync(
     if (ctx.state === "closed") return;
     const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
     const SUSTAINED_INSTRUMENTS: InstrumentName[] = ["pad", "strings", "organ", "flute", "bell", "electric_piano"];
-    const tail = SUSTAINED_INSTRUMENTS.includes(note.instrument) ? 1.5 : 0.25;
+    const isSustained = SUSTAINED_INSTRUMENTS.includes(note.instrument);
+    const tail = isSustained ? 0.75 : 0.25;
     const durSecs = Math.max(0.05, note.duration + tail);
-    player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs });
+    player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs, loop: isSustained });
     return;
   }
   synthesizeNoteOsc(ctx, dest, note);
@@ -911,7 +925,7 @@ export class AudioEngine {
     if (!this.ctx || this.ctx.state === "closed") {
       this.ctx = new AudioContext();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.72;
+      this.master.gain.value = 0.65; // Lower master to prevent overall clipping
       this.master.connect(this.ctx.destination);
       this.reverbBus = createReverb(this.ctx);
       this.reverbBus.output.connect(this.master);
@@ -943,11 +957,12 @@ export class AudioEngine {
     this.playTrackChains.clear();
     this.trackGains.clear();
     this.trackBaseVolumes.clear();
-    this.trackSoundfontPlayers.clear();
-
-    if (this.ctx && this.ctx.state !== "closed") {
-      void this.ctx.suspend();
+    
+    // Stop all active soundfont players for this run
+    for (const player of this.trackSoundfontPlayers.values()) {
+      try { player.stop(); } catch { /* */ }
     }
+    this.trackSoundfontPlayers.clear();
   }
 
   async preloadSoundfonts(): Promise<void> {
@@ -1086,14 +1101,30 @@ export class AudioEngine {
     this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
     this.schedulerIndex = 0;
 
+    let currentLoopStartTime = startTime;
+
     const scheduleChunk = () => {
       if (!this.isPlaying || this.playId !== thisPlayId || !this.ctx) return;
       const currentMuted = this.lastMutedTracks;
       const lookAheadEnd = this.ctx.currentTime + SCHEDULER_LOOKAHEAD;
-      while (this.schedulerIndex < this.sortedNotes.length) {
+      const loopDurationBeats = this.totalBeats;
+      const loopDurationSecs = loopDurationBeats * secondsPerBeat;
+      
+      while (true) {
+        if (this.schedulerIndex >= this.sortedNotes.length) {
+          if (this.looping && loopDurationBeats > 0) {
+            // Wrap around for the next loop iteration seamlessly
+            this.schedulerIndex = 0;
+            currentLoopStartTime += loopDurationSecs;
+          } else {
+            break; // Done scheduling all notes
+          }
+        }
+
         const mn = this.sortedNotes[this.schedulerIndex];
-        const noteStartTime = startTime + mn.beat * secondsPerBeat;
-        if (noteStartTime > lookAheadEnd) break;
+        const noteStartTime = currentLoopStartTime + mn.beat * secondsPerBeat;
+        
+        if (noteStartTime > lookAheadEnd) break; // Wait for next chunk
 
         const track = composition.tracks[mn.track];
         if (track && !(currentMuted?.has(mn.track))) {
@@ -1117,29 +1148,23 @@ export class AudioEngine {
     };
     scheduleChunk();
 
-    const loopEndTime = startTime + this.totalBeats * secondsPerBeat;
-    const endTime = loopEndTime + 0.5;
     let noteSearchStart = 0;
-
-    if (this.looping) {
-      const msUntilLoopEnd = (loopEndTime - ctx.currentTime) * 1000;
-      const msUntilRestart = Math.max(0, msUntilLoopEnd - 120);
-      this.loopRestartTimer = setTimeout(() => {
-        if (!this.isPlaying || this.playId !== thisPlayId || !this.currentComposition) return;
-        const comp = this.currentComposition;
-        const muted = this.lastMutedTracks;
-        this.cleanupPlayback();
-        this.isPlaying = false;
-        if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
-        this.play(comp, muted, { loop: true });
-      }, msUntilRestart);
-    }
 
     const tick = () => {
       if (!this.isPlaying || !this.ctx || this.playId !== thisPlayId) return;
 
-      const elapsed = this.ctx.currentTime - this.playStartTime;
-      const currentBeat = elapsed * (this.bpm / 60);
+      const elapsed = this.ctx.currentTime - startTime;
+      
+      if (!this.looping && elapsed > (this.totalBeats * secondsPerBeat) + 0.5) {
+        this.stop();
+        if (this.onPlaybackEnd) this.onPlaybackEnd();
+        return;
+      }
+
+      // Calculate playhead beat wrapped to the current loop
+      const loopDurationSecs = this.totalBeats * secondsPerBeat;
+      const wrappedElapsed = this.looping && loopDurationSecs > 0 ? elapsed % loopDurationSecs : elapsed;
+      const currentBeat = wrappedElapsed * (this.bpm / 60);
 
       if (this.onPlayheadUpdate) {
         this.onPlayheadUpdate(Math.max(0, currentBeat));
@@ -1148,6 +1173,12 @@ export class AudioEngine {
       if (this.onActiveNotesUpdate && this.sortedNotes.length > 0) {
         const active = new Set<number>();
         const currentMuted = this.lastMutedTracks;
+        
+        // Reset search if we looped
+        if (noteSearchStart >= this.sortedNotes.length || this.sortedNotes[noteSearchStart].beat > currentBeat + 0.5) {
+          noteSearchStart = 0;
+        }
+
         while (noteSearchStart < this.sortedNotes.length && this.sortedNotes[noteSearchStart].beat + this.sortedNotes[noteSearchStart].duration < currentBeat) {
           noteSearchStart++;
         }
@@ -1161,68 +1192,11 @@ export class AudioEngine {
         this.onActiveNotesUpdate(active);
       }
 
-      if (!this.looping && this.ctx.currentTime >= endTime) {
-        this.cleanupPlayback();
-        this.isPlaying = false;
-        if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
-        if (this.onPlaybackEnd) this.onPlaybackEnd();
-        return;
-      }
-
       this.animFrameId = requestAnimationFrame(tick);
     };
 
     this.animFrameId = requestAnimationFrame(tick);
   }
-
-  playWithCrossfade(composition: CompositionState, mutedTracks?: Set<string>, options?: { loop?: boolean }): void {
-    if (!this.isPlaying) {
-      this.play(composition, mutedTracks, options);
-      return;
-    }
-    if (this.crossfadeTimer !== null) {
-      clearTimeout(this.crossfadeTimer);
-      this.crossfadeTimer = null;
-    }
-    const FADE_MS = 220;
-    const FADE_S = FADE_MS / 1000;
-    if (this.master && this.ctx) {
-      const now = this.ctx.currentTime;
-      this.master.gain.cancelScheduledValues(now);
-      this.master.gain.setValueAtTime(this.master.gain.value, now);
-      this.master.gain.linearRampToValueAtTime(0, now + FADE_S);
-    }
-    this.crossfadeTimer = setTimeout(() => {
-      this.crossfadeTimer = null;
-      this.play(composition, mutedTracks, options);
-      if (this.master && this.ctx) {
-        const now = this.ctx.currentTime;
-        this.master.gain.cancelScheduledValues(now);
-        this.master.gain.setValueAtTime(0, now);
-        this.master.gain.linearRampToValueAtTime(0.72, now + FADE_S);
-      }
-    }, FADE_MS);
-  }
-
-  getIsPlaying(): boolean {
-    return this.isPlaying;
-  }
-
-  updateComposition(composition: CompositionState): void {
-    this.currentComposition = composition;
-    this.totalBeats = composition.totalBeats;
-    this.bpm = composition.bpm;
-    this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
-  }
-
-  updateMutedTracks(mutedTracks: Set<string>): void {
-    this.lastMutedTracks = mutedTracks;
-    for (const [name, gainNode] of this.trackGains) {
-      const baseVol = this.trackBaseVolumes.get(name) ?? 1;
-      gainNode.gain.value = mutedTracks.has(name) ? 0 : baseVol;
-    }
-  }
-
 
   stop(): void {
     this.playId++;
@@ -1231,16 +1205,142 @@ export class AudioEngine {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
     }
-    if (this.crossfadeTimer !== null) {
-      clearTimeout(this.crossfadeTimer);
-      this.crossfadeTimer = null;
+    
+    // Smooth master fade out to prevent clicks
+    if (this.master && this.ctx && this.ctx.state !== "closed") {
+      const now = this.ctx.currentTime;
+      this.master.gain.cancelScheduledValues(now);
+      this.master.gain.setValueAtTime(this.master.gain.value, now);
+      this.master.gain.linearRampToValueAtTime(0, now + 0.015);
+      
+      // Actively stop playing soundfonts to kill reverb tails feeding into the bus
+      for (const player of this.trackSoundfontPlayers.values()) {
+        try { player.stop(now + 0.015); } catch { /* */ }
+      }
+      
+      // Delay full cleanup by 20ms to allow the ramp down
+      setTimeout(() => {
+        this.cleanupPlayback();
+        this.currentComposition = null;
+        this.sortedNotes = [];
+        if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
+        if (this.onPlayheadUpdate) this.onPlayheadUpdate(-1);
+      }, 20);
+    } else {
+      this.cleanupPlayback();
+      this.currentComposition = null;
+      this.sortedNotes = [];
+      if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
+      if (this.onPlayheadUpdate) this.onPlayheadUpdate(-1);
     }
-    this.cleanupPlayback();
-    this.currentComposition = null;
-    this.sortedNotes = [];
+  }
 
-    if (this.onActiveNotesUpdate) this.onActiveNotesUpdate(new Set());
-    if (this.onPlayheadUpdate) this.onPlayheadUpdate(-1);
+  getIsPlaying(): boolean {
+    return this.isPlaying;
+  }
+
+  async updateComposition(composition: CompositionState): Promise<void> {
+    this.currentComposition = composition;
+    this.totalBeats = composition.totalBeats;
+    this.bpm = composition.bpm;
+    this.sortedNotes = [...composition.notes].sort((a, b) => a.beat - b.beat);
+
+    if (this.isPlaying && this.ctx) {
+      // 1. Ensure any NEW tracks have their soundfonts loaded and routed
+      const trackPlayerPromises: Promise<void>[] = [];
+      for (const [trackName, track] of Object.entries(composition.tracks)) {
+        if (!this.trackSoundfontPlayers.has(trackName)) {
+          // This is a new track that appeared mid-playback
+          const gmName = resolveGmName(track.instrument, track.variant);
+          if (!gmName) continue;
+          
+          let chain = this.playTrackChains.get(trackName);
+          if (!chain) {
+            // Build a new routing chain for this track on the fly
+            const g = this.ctx.createGain();
+            g.gain.value = track.volume ?? 1;
+            const p = this.ctx.createStereoPanner();
+            p.pan.value = track.pan ?? 0;
+            
+            let postGain: AudioNode = g;
+            if (track.distortion) postGain = applyDistortion(this.ctx, g, track.distortion);
+            if (track.delayParams) postGain = applyDelay(this.ctx, postGain, track.delayParams);
+            if (track.eq) {
+              if (track.eq.highpassHz) {
+                const hp = this.ctx.createBiquadFilter();
+                hp.type = "highpass";
+                hp.frequency.value = track.eq.highpassHz;
+                postGain.connect(hp);
+                postGain = hp;
+              }
+              if (track.eq.lowpassHz) {
+                const lp = this.ctx.createBiquadFilter();
+                lp.type = "lowpass";
+                lp.frequency.value = track.eq.lowpassHz;
+                postGain.connect(lp);
+                postGain = lp;
+              }
+            }
+            postGain.connect(p);
+            p.connect(this.master!);
+
+            const reverbAmount = track.reverb ?? 0.2;
+            if (reverbAmount > 0 && this.reverbBus) {
+              const reverbSend = this.ctx.createGain();
+              reverbSend.gain.value = reverbAmount;
+              postGain.connect(reverbSend);
+              reverbSend.connect(this.reverbBus.input);
+            }
+            
+            chain = { gain: g, pan: p };
+            this.playTrackChains.set(trackName, chain);
+            this.trackGains.set(trackName, g);
+            this.trackBaseVolumes.set(trackName, track.volume ?? 1);
+            if (this.lastMutedTracks?.has(trackName)) g.gain.value = 0;
+          }
+          
+          const dest = chain.gain;
+          const p = Soundfont.instrument(this.ctx, gmName, { soundfont: "MusyngKite", format: "mp3" })
+            .then((player) => {
+              if (!this.isPlaying || this.ctx?.state === "closed") return;
+              player.connect(dest);
+              this.trackSoundfontPlayers.set(trackName, player);
+            })
+            .catch(() => { /* fallback to oscillator */ });
+          trackPlayerPromises.push(p);
+        }
+      }
+      
+      if (trackPlayerPromises.length > 0) {
+        await Promise.all(trackPlayerPromises);
+      }
+
+      // 2. Rewind scheduler so new notes are picked up
+      if (!this.isPlaying) return;
+      const elapsed = this.ctx.currentTime - this.playStartTime;
+      const loopDurationSecs = this.totalBeats * (60 / this.bpm);
+      const wrappedElapsed = this.looping && loopDurationSecs > 0 ? elapsed % loopDurationSecs : elapsed;
+      const currentBeat = wrappedElapsed * (this.bpm / 60);
+      
+      let newIndex = 0;
+      while (newIndex < this.sortedNotes.length && this.sortedNotes[newIndex].beat < currentBeat) {
+        newIndex++;
+      }
+      this.schedulerIndex = newIndex;
+    }
+  }
+
+  updateMutedTracks(mutedTracks: Set<string>): void {
+    this.lastMutedTracks = mutedTracks;
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    for (const [name, gainNode] of this.trackGains) {
+      const baseVol = this.trackBaseVolumes.get(name) ?? 1;
+      const targetVol = mutedTracks.has(name) ? 0 : baseVol;
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+      gainNode.gain.linearRampToValueAtTime(targetVol, now + 0.05);
+    }
   }
 
   get playing(): boolean {
@@ -1322,7 +1422,7 @@ async function renderToBuffer(
   }));
 
   const master = offlineCtx.createGain();
-  master.gain.value = 0.72;
+  master.gain.value = 0.65;
   master.connect(offlineCtx.destination);
 
   const reverbBus = createReverb(offlineCtx);
@@ -1351,25 +1451,33 @@ async function renderToBuffer(
     trackChains.set(name, g);
   }
 
-  for (const note of notesToRender) {
-    const track = composition.tracks[note.track];
+  const SUSTAINED_INSTRUMENTS: InstrumentName[] = ["pad", "strings", "organ", "flute", "bell", "electric_piano"];
+  for (const mn of notesToRender) {
+    const track = composition.tracks[mn.track];
     if (!track) continue;
-    const dest = trackChains.get(note.track) ?? master;
-    const noteStart = note.beat * secondsPerBeat + 0.05;
-    const noteDuration = note.duration * secondsPerBeat;
+
+    const dest = trackChains.get(mn.track);
+    if (!dest) continue;
+
     const player = localPlayers.get(track.instrument);
+    const isSustained = SUSTAINED_INSTRUMENTS.includes(track.instrument);
+    const tail = isSustained ? 0.75 : 0.25;
+    const durSecs = Math.max(0.05, (mn.duration * secondsPerBeat) + tail);
+
     if (player) {
-      const midiNote = pitchToMidi(note.pitch);
-      const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
-      player.connect(dest);
-      player.play(midiNote, noteStart, { gain: gainVal, duration: Math.max(0.05, noteDuration) });
+      const gainVal = Math.max(0.01, Math.min(1, mn.velocity / 127));
+      player.play(pitchToMidi(mn.pitch), mn.beat * secondsPerBeat, {
+        gain: gainVal,
+        duration: durSecs,
+        loop: isSustained
+      });
     } else {
-      synthesizeNoteSync(ctx, dest, {
-        pitch: note.pitch,
-        frequency: pitchToFrequency(note.pitch),
-        startTime: noteStart,
-        duration: noteDuration,
-        velocity: note.velocity,
+      synthesizeNoteOsc(ctx, dest, {
+        pitch: mn.pitch,
+        frequency: pitchToFrequency(mn.pitch),
+        startTime: mn.beat * secondsPerBeat,
+        duration: mn.duration * secondsPerBeat,
+        velocity: mn.velocity,
         instrument: track.instrument,
         synthParams: track.synthParams,
         lfoParams: track.lfoParams
@@ -1461,22 +1569,22 @@ export function getTrackColor(instrument: string): string {
 }
 
 const DEFAULT_VOLUMES: Record<InstrumentName, number> = {
-  piano:         0.80,
-  strings:       0.75,
-  bass:          0.90,
-  pad:           0.65,
-  pluck:         0.75,
-  marimba:       0.72,
-  organ:         0.65,
-  flute:         0.72,
-  bell:          0.60,
-  synth_lead:    0.55,
-  kick:          0.95,
-  snare:         0.85,
-  hihat:         0.60,
-  clap:          0.75,
-  guitar:        0.72,
-  electric_piano:0.75,
+  piano:         0.75,
+  strings:       0.45,
+  bass:          0.85,
+  pad:           0.35,
+  pluck:         0.65,
+  marimba:       0.65,
+  organ:         0.55,
+  flute:         0.65,
+  bell:          0.55,
+  synth_lead:    0.50,
+  kick:          0.90,
+  snare:         0.80,
+  hihat:         0.50,
+  clap:          0.70,
+  guitar:        0.65,
+  electric_piano:0.70,
 };
 
 const DEFAULT_REVERBS: Record<InstrumentName, number> = {

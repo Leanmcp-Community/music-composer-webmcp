@@ -145,6 +145,18 @@ export class WebMcpRuntime {
     this.emitSnapshot();
   }
 
+  public restoreFromShare(metrics: RuntimeMetrics, toolCalls: ToolCallRecord[]) {
+    this.metrics = { ...metrics };
+    this.logs = toolCalls.map((tc) => ({
+      at: tc.at,
+      level: (tc.ok ? "success" : "error") as RuntimeLogEntry["level"],
+      message: `[replay] ${tc.ok ? "<-" : "!!"} ${tc.name} (${tc.elapsedMs}ms)`,
+      payload: tc.ok ? tc.result : tc.error
+    })).reverse().slice(0, MAX_LOGS);
+    this.scene = "Shared composition";
+    this.emitSnapshot();
+  }
+
   public setScene(scene: string) {
     this.scene = scene || "Idle";
     this.emitSnapshot();
