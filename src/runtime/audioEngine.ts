@@ -299,7 +299,21 @@ function synthesizeNoteSync(
     const isSustained = SUSTAINED_INSTRUMENTS.includes(note.instrument);
     const tail = isSustained ? 0.75 : 0.25;
     const durSecs = Math.max(0.05, note.duration + tail);
-    player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs, loop: isSustained });
+    
+    // Play the note, which returns a node
+    const node = player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs, loop: isSustained });
+    
+    // Explicitly route the note's output to our track destination
+    if (node && typeof node.connect === "function") {
+      try {
+        // Disconnect from the default destination that soundfont-player might have used
+        node.disconnect();
+        // Connect specifically to our track gain node
+        node.connect(dest);
+      } catch (e) {
+        // Ignore disconnect errors if it wasn't connected
+      }
+    }
     return;
   }
   synthesizeNoteOsc(ctx, dest, note);
@@ -915,6 +929,8 @@ export class AudioEngine {
   private bpm = 120;
   private currentComposition: CompositionState | null = null;
   private playTrackChains: Map<string, { gain: GainNode; pan: StereoPannerNode }> = new Map();
+  private trackReverbSends: Map<string, GainNode> = new Map();
+  private trackReverbAmounts: Map<string, number> = new Map();
   private sortedNotes: MusicNote[] = [];
   private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
   private schedulerIndex = 0;
@@ -969,7 +985,8 @@ export class AudioEngine {
     }
     this.playTrackChains.clear();
     this.trackGains.clear();
-    this.trackBaseVolumes.clear();
+    this.trackReverbSends.clear();
+    this.trackReverbAmounts.clear();
     
     // Stop all active soundfont players for this run
     for (const player of this.trackSoundfontPlayers.values()) {
@@ -1033,7 +1050,7 @@ export class AudioEngine {
     const trackChains = new Map<string, { gain: GainNode; pan: StereoPannerNode }>();
     for (const [name, track] of Object.entries(composition.tracks)) {
       const g = ctx.createGain();
-      g.gain.value = track.volume ?? 1;
+      g.gain.value = this.trackBaseVolumes.get(name) ?? track.volume ?? 1;
       
       const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -18;
@@ -1081,15 +1098,18 @@ export class AudioEngine {
         reverbSend.gain.value = reverbAmount;
         postGain.connect(reverbSend);
         reverbSend.connect(reverbBus.input);
+        this.trackReverbSends.set(name, reverbSend);
+        this.trackReverbAmounts.set(name, reverbAmount);
       }
       trackChains.set(name, { gain: g, pan: p });
     }
 
     this.trackGains.clear();
-    this.trackBaseVolumes.clear();
     for (const [name, chain] of trackChains) {
       this.trackGains.set(name, chain.gain);
-      this.trackBaseVolumes.set(name, composition.tracks[name]?.volume ?? 1);
+      if (!this.trackBaseVolumes.has(name)) {
+        this.trackBaseVolumes.set(name, composition.tracks[name]?.volume ?? 1);
+      }
       if (mutedTracks?.has(name)) chain.gain.gain.value = 0;
     }
 
@@ -1391,15 +1411,24 @@ export class AudioEngine {
   }
 
   updateTrackVolume(trackName: string, volume: number): void {
-    this.trackBaseVolumes.set(trackName, volume);
+    const clamped = Math.max(0, Math.min(1.5, volume));
+    this.trackBaseVolumes.set(trackName, clamped);
     const gainNode = this.trackGains.get(trackName);
     if (!gainNode || !this.ctx) return;
     const isMuted = this.lastMutedTracks?.has(trackName) ?? false;
     if (isMuted) return;
-    const now = this.ctx.currentTime;
-    gainNode.gain.cancelScheduledValues(now);
-    gainNode.gain.setValueAtTime(gainNode.gain.value, now);
-    gainNode.gain.linearRampToValueAtTime(volume, now + 0.02);
+    
+    const target = clamped < 0.001 ? 0 : clamped;
+    gainNode.gain.cancelScheduledValues(0);
+    gainNode.gain.value = target;
+    
+    const reverbSend = this.trackReverbSends.get(trackName);
+    if (reverbSend) {
+      const originalReverb = this.trackReverbAmounts.get(trackName) ?? 0.2;
+      const reverbTarget = clamped < 0.001 ? 0 : originalReverb;
+      reverbSend.gain.cancelScheduledValues(0);
+      reverbSend.gain.value = reverbTarget;
+    }
   }
 
   get playing(): boolean {

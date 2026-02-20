@@ -445,6 +445,7 @@ export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function Pi
             const isMuted = mutedTracks.has(name);
             const color = getTrackColor(track.instrument);
             const vol = trackVolumes?.[name] ?? track.volume ?? 1;
+            const volPct = Math.round(vol * 100);
             const isExpanded = expandedTrack === name;
             return (
               <div key={name} className="piano-roll-track-chip-group">
@@ -464,9 +465,9 @@ export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function Pi
                     title="Adjust volume"
                   >
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                      <rect x="1" y="6" width="2" height="4" rx="0.5" fill="currentColor" opacity={vol > 0.05 ? "1" : "0.3"} />
-                      <rect x="4" y="3" width="2" height="7" rx="0.5" fill="currentColor" opacity={vol > 0.35 ? "1" : "0.3"} />
-                      <rect x="7" y="0" width="2" height="10" rx="0.5" fill="currentColor" opacity={vol > 0.65 ? "1" : "0.3"} />
+                      <rect x="1" y="6" width="2" height="4" rx="0.5" fill="currentColor" opacity={volPct > 5 ? "1" : "0.3"} />
+                      <rect x="4" y="3" width="2" height="7" rx="0.5" fill="currentColor" opacity={volPct > 40 ? "1" : "0.3"} />
+                      <rect x="7" y="0" width="2" height="10" rx="0.5" fill="currentColor" opacity={volPct > 75 ? "1" : "0.3"} />
                     </svg>
                   </button>
                 )}
@@ -475,13 +476,13 @@ export const PianoRoll = forwardRef<PianoRollHandle, PianoRollProps>(function Pi
                     <input
                       type="range"
                       min="0"
-                      max="1"
-                      step="0.01"
-                      value={vol}
+                      max="150"
+                      step="1"
+                      value={volPct}
                       className="piano-roll-track-vol-slider"
-                      onChange={(e) => onTrackVolumeChange(name, parseFloat(e.target.value))}
+                      onChange={(e) => onTrackVolumeChange(name, parseInt(e.target.value, 10) / 100)}
                     />
-                    <span className="piano-roll-track-vol-label">{Math.round(vol * 100)}</span>
+                    <span className="piano-roll-track-vol-label">{volPct}%</span>
                   </div>
                 )}
               </div>
