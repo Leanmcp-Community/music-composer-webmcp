@@ -270,7 +270,9 @@ function synthesizeNoteSync(
   if (player) {
     if (ctx.state === "closed") return;
     const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
-    const durSecs = Math.max(0.05, note.duration);
+    const SUSTAINED_INSTRUMENTS: InstrumentName[] = ["pad", "strings", "organ", "flute", "bell", "electric_piano"];
+    const tail = SUSTAINED_INSTRUMENTS.includes(note.instrument) ? 1.5 : 0.25;
+    const durSecs = Math.max(0.05, note.duration + tail);
     player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs });
     return;
   }
