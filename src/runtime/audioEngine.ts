@@ -290,43 +290,34 @@ function synthesizeNoteSync(
   ctx: AudioContext,
   dest: GainNode,
   note: ScheduledNote,
+  trackVolume: number,
   player?: SoundfontPlayerInstance
 ): void {
   if (player) {
     if (ctx.state === "closed") return;
-    const gainVal = Math.max(0.01, Math.min(1, note.velocity / 127));
+    const baseGain = Math.max(0.01, Math.min(1, note.velocity / 127));
+    const gainVal = baseGain * trackVolume;
+    if (gainVal < 0.001) return;
     const SUSTAINED_INSTRUMENTS: InstrumentName[] = ["pad", "strings", "organ", "flute", "bell", "electric_piano"];
     const isSustained = SUSTAINED_INSTRUMENTS.includes(note.instrument);
     const tail = isSustained ? 0.75 : 0.25;
     const durSecs = Math.max(0.05, note.duration + tail);
-    
-    // Play the note, which returns a node
-    const node = player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs, loop: isSustained });
-    
-    // Explicitly route the note's output to our track destination
-    if (node && typeof node.connect === "function") {
-      try {
-        // Disconnect from the default destination that soundfont-player might have used
-        node.disconnect();
-        // Connect specifically to our track gain node
-        node.connect(dest);
-      } catch (e) {
-        // Ignore disconnect errors if it wasn't connected
-      }
-    }
+    player.play(pitchToMidi(note.pitch ?? ""), note.startTime, { gain: gainVal, duration: durSecs, loop: isSustained });
     return;
   }
-  synthesizeNoteOsc(ctx, dest, note);
+  synthesizeNoteOsc(ctx, dest, note, trackVolume);
 }
 
 
 function synthesizeNoteOsc(
   ctx: AudioContext,
   master: GainNode,
-  note: ScheduledNote
+  note: ScheduledNote,
+  trackVolume: number
 ): void {
   const { frequency, startTime, duration, velocity, instrument, synthParams: sp, lfoParams: lfo } = note;
-  const gain = velocity / 127;
+  const gain = (velocity / 127) * trackVolume;
+  if (gain < 0.001) return;
   const endTime = startTime + duration;
   const wave = sp?.waveform;
   const fCut = sp?.filterCutoff;
@@ -929,8 +920,6 @@ export class AudioEngine {
   private bpm = 120;
   private currentComposition: CompositionState | null = null;
   private playTrackChains: Map<string, { gain: GainNode; pan: StereoPannerNode }> = new Map();
-  private trackReverbSends: Map<string, GainNode> = new Map();
-  private trackReverbAmounts: Map<string, number> = new Map();
   private sortedNotes: MusicNote[] = [];
   private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
   private schedulerIndex = 0;
@@ -985,8 +974,6 @@ export class AudioEngine {
     }
     this.playTrackChains.clear();
     this.trackGains.clear();
-    this.trackReverbSends.clear();
-    this.trackReverbAmounts.clear();
     
     // Stop all active soundfont players for this run
     for (const player of this.trackSoundfontPlayers.values()) {
@@ -1028,6 +1015,9 @@ export class AudioEngine {
     if (ctx.state === "suspended") {
       await ctx.resume();
     }
+
+    master.gain.cancelScheduledValues(0);
+    master.gain.value = 0.9;
 
     this.bpm = composition.bpm;
     this.totalBeats = composition.totalBeats;
@@ -1098,8 +1088,6 @@ export class AudioEngine {
         reverbSend.gain.value = reverbAmount;
         postGain.connect(reverbSend);
         reverbSend.connect(reverbBus.input);
-        this.trackReverbSends.set(name, reverbSend);
-        this.trackReverbAmounts.set(name, reverbAmount);
       }
       trackChains.set(name, { gain: g, pan: p });
     }
@@ -1183,6 +1171,7 @@ export class AudioEngine {
           const chain = trackChains.get(mn.track);
           const dest = chain ? chain.gain : master;
           const sfPlayer = this.trackSoundfontPlayers.get(mn.track);
+          const trackVol = this.trackBaseVolumes.get(mn.track) ?? track.volume ?? 1;
           synthesizeNoteSync(ctx, dest, {
             pitch: mn.pitch,
             frequency: pitchToFrequency(mn.pitch),
@@ -1192,7 +1181,7 @@ export class AudioEngine {
             instrument: track.instrument,
             synthParams: track.synthParams,
             lfoParams: track.lfoParams
-          }, sfPlayer);
+          }, trackVol, sfPlayer);
         }
         this.schedulerIndex++;
       }
@@ -1411,24 +1400,7 @@ export class AudioEngine {
   }
 
   updateTrackVolume(trackName: string, volume: number): void {
-    const clamped = Math.max(0, Math.min(1.5, volume));
-    this.trackBaseVolumes.set(trackName, clamped);
-    const gainNode = this.trackGains.get(trackName);
-    if (!gainNode || !this.ctx) return;
-    const isMuted = this.lastMutedTracks?.has(trackName) ?? false;
-    if (isMuted) return;
-    
-    const target = clamped < 0.001 ? 0 : clamped;
-    gainNode.gain.cancelScheduledValues(0);
-    gainNode.gain.value = target;
-    
-    const reverbSend = this.trackReverbSends.get(trackName);
-    if (reverbSend) {
-      const originalReverb = this.trackReverbAmounts.get(trackName) ?? 0.2;
-      const reverbTarget = clamped < 0.001 ? 0 : originalReverb;
-      reverbSend.gain.cancelScheduledValues(0);
-      reverbSend.gain.value = reverbTarget;
-    }
+    this.trackBaseVolumes.set(trackName, Math.max(0, Math.min(1.5, volume)));
   }
 
   get playing(): boolean {
@@ -1569,7 +1541,7 @@ async function renderToBuffer(
         instrument: track.instrument,
         synthParams: track.synthParams,
         lfoParams: track.lfoParams
-      });
+      }, track.volume ?? 1);
     }
   }
 
