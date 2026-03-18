@@ -401,6 +401,10 @@ export default function App() {
         try { localStorage.setItem("webmcp_free_runs", String(next)); } catch { /* */ }
         return next;
       });
+      if (window.lmcp && !window.lmcp.hasCredits()) {
+        window.lmcp.showCreditsModal();
+        return;
+      }
       await agentSingleton.run({ ...config, apiKey: "" }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;

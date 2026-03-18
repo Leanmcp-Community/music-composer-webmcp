@@ -11,6 +11,637 @@
 <body>
   <div id="root"></div>
   <script type="module" src="/src/main.tsx"></script>
+
+  <!-- LeanMCP: Firebase bridge — adapts custom sessionStorage auth to compat-like firebase.auth() API -->
+  <script>
+  (function () {
+    var AUTH_STORAGE_KEY = 'webmcp_auth';
+    var _listeners = [];
+    var _currentUser = null;
+
+    function readStoredUser() {
+      try {
+        var raw = sessionStorage.getItem(AUTH_STORAGE_KEY);
+        if (!raw) return null;
+        var u = JSON.parse(raw);
+        if (Date.now() >= u.tokenExpiry) return null;
+        return u;
+      } catch (e) { return null; }
+    }
+
+    function buildUser(u) {
+      if (!u) return null;
+      return {
+        uid: u.uid,
+        email: u.email,
+        displayName: u.displayName,
+        photoURL: u.photoURL,
+        getIdToken: function () { return Promise.resolve(u.idToken); }
+      };
+    }
+
+    function notifyListeners(user) {
+      _listeners.forEach(function (cb) { try { cb(user); } catch (e) {} });
+    }
+
+    // Poll sessionStorage for auth changes (login happens via popup)
+    setInterval(function () {
+      var u = buildUser(readStoredUser());
+      var changed = (u === null) !== (_currentUser === null) ||
+                    (u && _currentUser && u.uid !== _currentUser.uid);
+      if (changed) {
+        _currentUser = u;
+        notifyListeners(_currentUser);
+      }
+    }, 2000);
+
+    window.firebase = {
+      auth: function () {
+        return {
+          onAuthStateChanged: function (cb) {
+            _listeners.push(cb);
+            _currentUser = buildUser(readStoredUser());
+            setTimeout(function () { cb(_currentUser); }, 0);
+            return function () {
+              _listeners = _listeners.filter(function (l) { return l !== cb; });
+            };
+          },
+          get currentUser() { return _currentUser; }
+        };
+      }
+    };
+  })();
+  </script>
+
+  <style id="lmcp-styles">
+  /* ── LeanMCP Footer Bar ─────────────────────────────────── */
+  #lmcp-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 9999;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    background: #0A0A0A;
+    border-top: 2px solid #222;
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 13px;
+    gap: 12px;
+    box-sizing: border-box;
+    transform: translateY(100%);
+    transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  #lmcp-bar.visible { transform: translateY(0); }
+
+  /* Left — brand */
+  #lmcp-brand {
+    display: flex; align-items: center; gap: 8px;
+    text-decoration: none; flex-shrink: 0; white-space: nowrap;
+  }
+  #lmcp-brand-name {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-weight: 700; font-style: italic; font-size: 13px; color: white; letter-spacing: -0.02em;
+  }
+  #lmcp-brand-pal {
+    background: #EF834E; color: #0A0A0A;
+    font-size: 13px; font-weight: 700; padding: 2px 8px;
+    letter-spacing: .06em;
+  }
+  #lmcp-brand-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #EF834E;
+    animation: lmcp-blink 2s infinite;
+  }
+  @keyframes lmcp-blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+  /* Centre — progress meter */
+  #lmcp-meter {
+    display: flex; align-items: center; gap: 10px;
+    flex: 1; max-width: 300px; margin: 0 auto;
+  }
+  #lmcp-meter-label { color: #8A8A8A; white-space: nowrap; font-size: 13px; letter-spacing: .04em; }
+  #lmcp-track {
+    flex: 1; height: 3px; background: #222; overflow: hidden;
+  }
+  #lmcp-fill {
+    height: 100%; background: #EF834E;
+    transition: width 0.5s ease, background 0.3s ease;
+  }
+  #lmcp-fill.warn { background: #EF834E; }
+  #lmcp-fill.crit { background: #EB3E26; }
+  #lmcp-count {
+    color: #8A8A8A; white-space: nowrap; font-size: 14px; font-weight: 700;
+    min-width: 60px; text-align: right;
+  }
+  #lmcp-count.crit { color: #EB3E26; }
+
+  /* Right — actions */
+  #lmcp-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+  .lmcp-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 700; letter-spacing: .06em;
+    padding: 7px 16px; cursor: pointer; white-space: nowrap;
+    text-decoration: none; border: none; transition: all .15s;
+  }
+  .lmcp-btn-ghost {
+    background: transparent; color: #8A8A8A;
+    border: 1px solid #333;
+  }
+  .lmcp-btn-ghost:hover { color: white; border-color: #555; }
+  .lmcp-btn-main {
+    background: #EF834E; color: #0A0A0A;
+  }
+  .lmcp-btn-main:hover { background: #f5956a; }
+
+  /* ── Modal — credits exhausted ─────────────────────────── */
+  #lmcp-modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 10000;
+    background: rgba(0,0,0,0.88);
+    backdrop-filter: blur(6px);
+    align-items: center; justify-content: center;
+  }
+  #lmcp-modal-overlay.open { display: flex; }
+
+  #lmcp-modal {
+    background: #0A0A0A;
+    border: 2px solid #222;
+    padding: 40px; max-width: 460px;
+    width: calc(100% - 48px);
+    font-family: 'JetBrains Mono', monospace;
+    position: relative;
+    animation: lmcp-pop .22s cubic-bezier(.16,1,.3,1);
+  }
+  @keyframes lmcp-pop {
+    from { opacity:0; transform:scale(.95) translateY(10px); }
+    to   { opacity:1; transform:scale(1) translateY(0); }
+  }
+
+  #lmcp-modal-x {
+    position: absolute; top: 14px; right: 16px;
+    background: none; border: none; color: #888;
+    font-size: 16px; cursor: pointer; font-family: inherit;
+    transition: color .15s;
+  }
+  #lmcp-modal-x:hover { color: white; }
+
+  .lmcp-m-tag {
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: #EF834E; margin-bottom: 16px;
+  }
+  .lmcp-m-title {
+    font-size: 24px; font-weight: 700; color: white;
+    line-height: 1.2; margin-bottom: 14px; letter-spacing: -0.02em;
+  }
+  .lmcp-m-body {
+    font-size: 13px; color: #8A8A8A; line-height: 1.85; margin-bottom: 24px;
+  }
+  .lmcp-m-body strong { color: #999; }
+
+  .lmcp-m-steps { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+  .lmcp-m-step { display: flex; gap: 12px; font-size: 13px; color: #8A8A8A; }
+  .lmcp-m-step-n { color: #EF834E; width: 20px; flex-shrink: 0; font-weight: 700; }
+
+  .lmcp-m-btns { display: flex; flex-direction: column; gap: 8px; }
+  .lmcp-m-btn-main {
+    display: block; width: 100%; padding: 13px;
+    text-align: center; text-decoration: none;
+    background: #EF834E; color: #0A0A0A;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 700; letter-spacing: .04em;
+    border: none; cursor: pointer; box-sizing: border-box; transition: background .15s;
+  }
+  .lmcp-m-btn-main:hover { background: #f5956a; }
+  .lmcp-m-btn-ghost {
+    display: block; width: 100%; padding: 11px;
+    text-align: center; text-decoration: none;
+    background: transparent; color: #8A8A8A;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; letter-spacing: .04em;
+    border: 1px solid #222; cursor: pointer; box-sizing: border-box; transition: all .15s;
+  }
+  .lmcp-m-btn-ghost:hover { color: #AAAAAA; border-color: #444; }
+
+  /* ── How it works panel ─────────────────────────────────── */
+  #lmcp-how-overlay {
+    display: none; position: fixed; inset: 0; z-index: 10000;
+    background: rgba(0,0,0,0.88);
+    backdrop-filter: blur(6px);
+    align-items: center; justify-content: center;
+  }
+  #lmcp-how-overlay.open { display: flex; }
+
+  #lmcp-how {
+    background: #0A0A0A; border: 2px solid #222;
+    padding: 40px; max-width: 500px;
+    width: calc(100% - 48px);
+    font-family: 'JetBrains Mono', monospace;
+    position: relative; max-height: 88vh; overflow-y: auto;
+    animation: lmcp-pop .22s cubic-bezier(.16,1,.3,1);
+  }
+
+  .lmcp-hw-title {
+    font-size: 20px; font-weight: 700; color: white;
+    letter-spacing: -0.02em; margin-bottom: 24px; line-height: 1.2;
+  }
+  .lmcp-hw-row { display: flex; gap: 14px; margin-bottom: 16px; align-items: flex-start; }
+  .lmcp-hw-key {
+    font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+    color: #EF834E; width: 72px; flex-shrink: 0; padding-top: 2px;
+  }
+  .lmcp-hw-val { font-size: 13px; color: #8A8A8A; line-height: 1.8; }
+  .lmcp-hw-val strong { color: #999; }
+  .lmcp-hw-val code {
+    color: #EF834E; background: rgba(239,131,78,.12);
+    padding: 1px 6px; font-size: 13px;
+  }
+  .lmcp-hw-tools { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 16px 86px; }
+  .lmcp-hw-tool {
+    font-size: 13px; color: #EF834E; background: rgba(239,131,78,.08);
+    padding: 4px 10px; border: 1px solid rgba(239,131,78,.25);
+  }
+  .lmcp-hw-divider { height: 1px; background: #1a1a1a; margin: 20px 0; }
+  .lmcp-hw-btns { display: flex; gap: 10px; }
+  </style>
+
+  <!-- ── The bar ───────────────────────────────────────────── -->
+
+  <div id="lmcp-bar">
+    <a href="https://leanmcp.com/webmcp" id="lmcp-brand" target="_blank" rel="noopener">
+      <div id="lmcp-brand-dot"></div>
+      <span id="lmcp-brand-name">LEANMCP</span>
+      <span id="lmcp-brand-pal">AI PAL</span>
+    </a>
+
+    <div id="lmcp-meter">
+      <span id="lmcp-meter-label">credits</span>
+      <div id="lmcp-track"><div id="lmcp-fill" style="width:100%"></div></div>
+      <span id="lmcp-count">$1.00</span>
+    </div>
+
+    <div id="lmcp-actions">
+      <button class="lmcp-btn lmcp-btn-ghost" onclick="lmcpOpenHow()">How this works</button>
+      <a id="lmcp-credits-btn" href="https://app.leanmcp.com/billing" class="lmcp-btn lmcp-btn-main" target="_blank" rel="noopener">Get more credits →</a>
+    </div>
+  </div>
+
+  <!-- ── Credits exhausted modal ──────────────────────────── -->
+
+  <div id="lmcp-modal-overlay" onclick="lmcpCloseModal(event)">
+    <div id="lmcp-modal">
+      <button id="lmcp-modal-x" onclick="lmcpCloseModal()">✕</button>
+      <div class="lmcp-m-tag">// Free calls used up</div>
+      <div class="lmcp-m-title">You've used your<br>1 free credit.</div>
+      <div class="lmcp-m-body">
+        Your 1 free credit covers your first session —
+        <strong id="lmcp-modal-example-tools">add_note(), set_tempo()</strong> —
+        Once it is used, buy credits to keep playing.<br><br>
+        Buy credits at app.leanmcp.com to keep playing.
+        Same cost as going direct to OpenAI, plus a tiny <strong>~0.5%</strong> gateway fee.
+      </div>
+      <div class="lmcp-m-steps">
+        <div class="lmcp-m-step">
+          <div class="lmcp-m-step-n">01</div>
+          <div>Go to app.leanmcp.com/billing</div>
+        </div>
+        <div class="lmcp-m-step">
+          <div class="lmcp-m-step-n">02</div>
+          <div>Buy a credit pack — start small</div>
+        </div>
+        <div class="lmcp-m-step">
+          <div class="lmcp-m-step-n">03</div>
+          <div>Come back and keep playing</div>
+        </div>
+      </div>
+      <div class="lmcp-m-btns">
+        <a href="https://app.leanmcp.com/billing" class="lmcp-m-btn-main" target="_blank" rel="noopener">
+          Buy credits → app.leanmcp.com/billing
+        </a>
+        <a id="lmcp-modal-dev-link" href="https://github.com/Leanmcp-Community" class="lmcp-m-btn-ghost" target="_blank" rel="noopener">
+          I'm a developer — show me how to build this
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── How it works panel ───────────────────────────────── -->
+
+  <div id="lmcp-how-overlay" onclick="lmcpCloseHow(event)">
+    <div id="lmcp-how">
+      <button class="lmcp-modal-close" style="position:absolute;top:14px;right:16px;background:none;border:none;color:#444;font-size:16px;cursor:pointer;font-family:inherit;" onclick="lmcpCloseHow()">✕</button>
+
+      <div class="lmcp-m-tag">// How this demo works</div>
+      <div class="lmcp-hw-title" id="lmcp-hw-title">Music Composer<br>— how it works</div>
+
+      <div class="lmcp-hw-row">
+        <div class="lmcp-hw-key">You</div>
+        <div class="lmcp-hw-val">Type what you want. <strong>"Lo-fi jazz riff, C minor, slow."</strong> That's it. Your AI Pal handles the rest.</div>
+      </div>
+      <div class="lmcp-hw-row">
+        <div class="lmcp-hw-key">AI Pal</div>
+        <div class="lmcp-hw-val">An LLM (GPT-4o or Claude) reads your message and decides which browser tools to call, in what order, to make it happen.</div>
+      </div>
+      <div class="lmcp-hw-row">
+        <div class="lmcp-hw-key">WebMCP</div>
+        <div class="lmcp-hw-val">This demo registers tools via <code>navigator.modelContext.registerTool()</code> — the new W3C browser standard. No screenshots. No pixel-clicking. Real JavaScript functions called directly.</div>
+      </div>
+      <div class="lmcp-hw-row">
+        <div class="lmcp-hw-key">Tools</div>
+        <div class="lmcp-hw-val">This demo exposes:</div>
+      </div>
+      <div class="lmcp-hw-tools" id="lmcp-hw-tools"></div>
+
+      <div class="lmcp-hw-row">
+        <div class="lmcp-hw-key">Credits</div>
+        <div class="lmcp-hw-val">Each tool call hits a real LLM. You get <strong>1 free credit ($1)</strong>. When it runs out, buy more credits at app.leanmcp.com/billing. Credits are used at cost — roughly $0.04–$0.15 per session.</div>
+      </div>
+      <div class="lmcp-hw-row">
+        <div class="lmcp-hw-key">Gateway</div>
+        <div class="lmcp-hw-val">All calls flow through the <strong>LeanMCP AI Gateway</strong> — every call logged, every cost tracked. The same gateway you can use to monitor your own AI tools (Cursor, Cline, OpenClaw).</div>
+      </div>
+
+      <div class="lmcp-hw-divider"></div>
+      <div class="lmcp-hw-btns">
+        <a href="https://leanmcp.com/webmcp" class="lmcp-m-btn-main" style="flex:1;text-align:center;" target="_blank" rel="noopener">All WebMCP demos →</a>
+        <a href="https://app.leanmcp.com/billing" class="lmcp-m-btn-ghost" style="flex:1;text-align:center;" target="_blank" rel="noopener">Buy credits</a>
+      </div>
+    </div>
+  </div>
+
+  <script id="lmcp-script">
+  // ════════════════════════════════════════════════════════
+  //  LEANMCP FOOTER COMPONENT v3
+  //  Real credits from Firebase + LeanMCP billing API.
+  //  No fake counters. No sessionStorage.
+  //
+  //  REQUIRES: Firebase SDK already loaded on the demo page.
+  //  The demo page must have firebase/app and firebase/auth
+  //  initialised before this script runs.
+  // ════════════════════════════════════════════════════════
+
+  (function() {
+
+    // ── CONFIG — edit for each demo ─────────────────────
+    var CONFIG = {
+      DEMO_NAME:   'Music Composer',
+      DEMO_TOOLS:  [
+        'add_note(pitch, duration)',
+        'set_tempo(bpm)',
+        'change_instrument(name)',
+        'clear_track()'
+      ],
+      SOURCE_URL:  'https://github.com/Leanmcp-Community/music-composer-webmcp',
+      ACCENT:      '#EF834E',
+
+      // How often to re-fetch balance while demo is open (ms)
+      POLL_INTERVAL: 4000,
+
+      // LeanMCP billing endpoint
+      BALANCE_URL: 'https://api.leanmcp.com/billing/balance'
+    };
+    // ────────────────────────────────────────────────────
+
+    // State
+    var balance        = null;
+    var startBalance   = null;
+    var authToken      = null;
+    var pollTimer      = null;
+    var modalShown     = false;
+    var barVisible     = false;
+
+    // ── Apply accent colour ──────────────────────────────
+    var dot     = document.getElementById('lmcp-brand-dot');
+    var fill    = document.getElementById('lmcp-fill');
+    var pal     = document.getElementById('lmcp-brand-pal');
+    var credBtn = document.getElementById('lmcp-credits-btn');
+    [dot, fill, pal, credBtn].forEach(function(el) {
+      if (el) el.style.background = CONFIG.ACCENT;
+    });
+
+    // ── Populate "how it works" tool list ───────────────
+    var toolList = document.getElementById('lmcp-hw-tools');
+    if (toolList) {
+      CONFIG.DEMO_TOOLS.forEach(function(t) {
+        var span = document.createElement('span');
+        span.className = 'lmcp-hw-tool';
+        span.style.color = CONFIG.ACCENT;
+        span.style.borderColor = CONFIG.ACCENT + '44';
+        span.style.background  = CONFIG.ACCENT + '11';
+        span.textContent = t;
+        toolList.appendChild(span);
+      });
+    }
+    var hwTitle = document.getElementById('lmcp-hw-title');
+    if (hwTitle) hwTitle.innerHTML = CONFIG.DEMO_NAME + '<br>— how it works';
+
+    var devLink = document.getElementById('lmcp-modal-dev-link');
+    if (devLink) devLink.href = CONFIG.SOURCE_URL;
+
+    // ── Render bar with real dollar balance ─────────────
+    function render() {
+      var fillEl  = document.getElementById('lmcp-fill');
+      var countEl = document.getElementById('lmcp-count');
+      var labelEl = document.getElementById('lmcp-meter-label');
+      if (!fillEl || !countEl) return;
+
+      if (balance === null) {
+        fillEl.style.width = '100%';
+        fillEl.style.background = '#333';
+        countEl.textContent = '...';
+        countEl.style.color = '#8A8A8A';
+        return;
+      }
+
+      if (authToken === null) {
+        fillEl.style.width = '0%';
+        countEl.textContent = 'sign in';
+        countEl.style.color = '#8A8A8A';
+        if (labelEl) labelEl.textContent = 'to use credits';
+        return;
+      }
+
+      var usd = Math.max(0, balance);
+      var reference = startBalance !== null ? Math.max(startBalance, 1.00) : 1.00;
+      var pct = Math.min(100, (usd / reference) * 100);
+      var colour = pct > 50 ? CONFIG.ACCENT : pct > 20 ? '#EF834E' : '#EB3E26';
+
+      fillEl.style.width      = pct + '%';
+      fillEl.style.background = colour;
+
+      countEl.textContent = usd.toFixed(2) + ' cr';
+      countEl.style.color = pct <= 20 ? '#EB3E26' : '#8A8A8A';
+
+      if (labelEl) labelEl.textContent = 'credits';
+
+      if (usd <= 0 && !modalShown) {
+        modalShown = true;
+        fillEl.style.width = '0%';
+        countEl.textContent = '$0.00';
+        countEl.style.color = '#EB3E26';
+        setTimeout(openModal, 800);
+      }
+    }
+
+    // ── Fetch real balance from API ──────────────────────
+    function fetchBalance() {
+      if (!authToken) return;
+
+      fetch(CONFIG.BALANCE_URL, {
+        method: 'GET',
+        headers: {
+          'Authorization': 'Bearer ' + authToken,
+          'Content-Type':  'application/json'
+        }
+      })
+      .then(function(res) {
+        if (res.status === 401) {
+          refreshToken();
+          return null;
+        }
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .then(function(data) {
+        if (!data) return;
+
+        var newBalance = parseFloat(data.availableCreditsUsd);
+        if (isNaN(newBalance)) return;
+
+        if (startBalance === null) {
+          startBalance = newBalance;
+        }
+
+        balance = newBalance;
+        render();
+
+        if (!barVisible) {
+          barVisible = true;
+          var bar = document.getElementById('lmcp-bar');
+          if (bar) bar.classList.add('visible');
+        }
+      })
+      .catch(function() {});
+    }
+
+    // ── Refresh Firebase token (expires every hour) ──────
+    function refreshToken() {
+      if (typeof firebase === 'undefined') return;
+      var user = firebase.auth().currentUser;
+      if (!user) return;
+      user.getIdToken(true).then(function(token) {
+        authToken = token;
+        fetchBalance();
+      }).catch(function() {
+        authToken = null;
+        render();
+      });
+    }
+
+    // ── Start polling ────────────────────────────────────
+    function startPolling() {
+      fetchBalance();
+      pollTimer = setInterval(fetchBalance, CONFIG.POLL_INTERVAL);
+    }
+
+    function stopPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+    }
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        refreshToken();
+        startPolling();
+      }
+    });
+
+    // ── Wait for Firebase auth then boot ─────────────────
+    function boot() {
+      if (typeof firebase === 'undefined' || !firebase.auth) {
+        setTimeout(boot, 500);
+        return;
+      }
+
+      firebase.auth().onAuthStateChanged(function(user) {
+        if (user) {
+          user.getIdToken().then(function(token) {
+            authToken = token;
+            startPolling();
+
+            setInterval(function() {
+              user.getIdToken(true).then(function(t) { authToken = t; });
+            }, 55 * 60 * 1000);
+          });
+        } else {
+          authToken = null;
+          balance   = 0;
+          setTimeout(function() {
+            var bar = document.getElementById('lmcp-bar');
+            if (bar) bar.classList.add('visible');
+          }, 1200);
+          render();
+        }
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot);
+    } else {
+      boot();
+    }
+
+    // ── Modal open/close ─────────────────────────────────
+    function openModal() {
+      if (startBalance !== null && balance !== null) {
+        var spent = Math.max(0, startBalance - balance).toFixed(4);
+        var bodyEl = document.querySelector('.lmcp-m-body');
+        if (bodyEl && parseFloat(spent) > 0) {
+          bodyEl.innerHTML =
+            'This session used <strong>' + spent + ' credits</strong>. ' +
+            'Buy more at app.leanmcp.com to keep playing.<br><br>' +
+            'Same cost as going direct to OpenAI, plus a tiny <strong>~0.5%</strong> gateway fee.';
+        }
+      }
+      var el = document.getElementById('lmcp-modal-overlay');
+      if (el) el.classList.add('open');
+    }
+
+    // ── Public API ───────────────────────────────────────
+    window.lmcp = {
+      track: function(toolName) {
+        fetchBalance();
+      },
+      hasCredits: function() {
+        return balance === null || balance > 0;
+      },
+      balance: function() {
+        return balance;
+      },
+      showCreditsModal: function() { openModal(); },
+      refresh: function() { fetchBalance(); }
+    };
+
+  })();
+
+  // ── Global panel controls ────────────────────────────
+  function lmcpCloseModal(e) {
+    if (!e || e.target === document.getElementById('lmcp-modal-overlay')) {
+      document.getElementById('lmcp-modal-overlay').classList.remove('open');
+    }
+  }
+  function lmcpOpenHow() {
+    document.getElementById('lmcp-how-overlay').classList.add('open');
+  }
+  function lmcpCloseHow(e) {
+    if (!e || e.target === document.getElementById('lmcp-how-overlay')) {
+      document.getElementById('lmcp-how-overlay').classList.remove('open');
+    }
+  }
+  </script>
+
 </body>
 
 </html>
