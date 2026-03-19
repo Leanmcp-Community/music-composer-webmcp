@@ -215,7 +215,7 @@ export default function App() {
   const mutedTracksRef = useRef<Set<string>>(new Set());
   const [trackVolumes, setTrackVolumes] = useState<Record<string, number>>({});
   const pianoRollRef = useRef<PianoRollHandle>(null);
-  const { user, login, logout } = useAuth();
+  const { user, login, logout, getToken } = useAuth();
   const tracksWithNotesRef = useRef<Set<string>>(new Set());
   const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAgentRunningRef = useRef(false);
@@ -386,7 +386,7 @@ export default function App() {
       setStatusMessage("Loading instruments...");
       await audioEngine.preloadSoundfonts();
       setStatusMessage("Composing — playback starts automatically...");
-      await agentSingleton.run({ ...config, apiKey: "" }, {
+      await agentSingleton.run({ ...config, apiKey: getToken() ?? "" }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;
           if (!running) {
