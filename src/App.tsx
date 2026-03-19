@@ -216,9 +216,6 @@ export default function App() {
   const [trackVolumes, setTrackVolumes] = useState<Record<string, number>>({});
   const pianoRollRef = useRef<PianoRollHandle>(null);
   const { user, login, logout } = useAuth();
-  const [freeRunsUsed, setFreeRunsUsed] = useState<number>(() => {
-    try { return parseInt(localStorage.getItem("webmcp_free_runs") ?? "0", 10) || 0; } catch { return 0; }
-  });
   const tracksWithNotesRef = useRef<Set<string>>(new Set());
   const layeredRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAgentRunningRef = useRef(false);
@@ -363,16 +360,9 @@ export default function App() {
   };
 
   const startAgent = async () => {
-    const selectedModel = MODEL_OPTIONS.find((m) => m.model === config.model);
-    if (selectedModel?.loginRequired && !user) {
+    if (!user) {
       login();
-      setStatusMessage("Sign in to use this model");
-      return;
-    }
-
-    if (!user && freeRunsUsed >= 1) {
-      login();
-      setStatusMessage("Sign in to continue composing");
+      setStatusMessage("Sign in to start composing");
       return;
     }
 
@@ -396,11 +386,6 @@ export default function App() {
       setStatusMessage("Loading instruments...");
       await audioEngine.preloadSoundfonts();
       setStatusMessage("Composing — playback starts automatically...");
-      if (!user) setFreeRunsUsed((n) => {
-        const next = n + 1;
-        try { localStorage.setItem("webmcp_free_runs", String(next)); } catch { /* */ }
-        return next;
-      });
       await agentSingleton.run({ ...config, apiKey: "" }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;
