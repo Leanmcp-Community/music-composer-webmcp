@@ -364,7 +364,7 @@
 
       <div class="lmcp-hw-divider"></div>
       <div class="lmcp-hw-btns">
-        <a href="https://leanmcp.com/webmcp" class="lmcp-m-btn-main" style="flex:1;text-align:center;" target="_blank" rel="noopener">All WebMCP demos →</a>
+        <a href="https://www.leanmcp.com/aipal" class="lmcp-m-btn-main" style="flex:1;text-align:center;" target="_blank" rel="noopener">All WebMCP demos →</a>
         <a href="https://app.leanmcp.com/billing" class="lmcp-m-btn-ghost" style="flex:1;text-align:center;" target="_blank" rel="noopener">Buy credits</a>
       </div>
     </div>
@@ -527,8 +527,8 @@
 
     // ── Refresh Firebase token (expires every hour) ──────
     function refreshToken() {
-      if (typeof firebase === 'undefined') return;
-      var user = firebase.auth().currentUser;
+      if (typeof window.firebase === 'undefined') return;
+      var user = window.firebase.auth().currentUser;
       if (!user) return;
       user.getIdToken(true).then(function(token) {
         authToken = token;
@@ -560,12 +560,12 @@
 
     // ── Wait for Firebase auth then boot ─────────────────
     function boot() {
-      if (typeof firebase === 'undefined' || !firebase.auth) {
+      if (typeof window.firebase === 'undefined' || !window.firebase.auth) {
         setTimeout(boot, 500);
         return;
       }
 
-      firebase.auth().onAuthStateChanged(function(user) {
+      window.firebase.auth().onAuthStateChanged(function(user) {
         if (user) {
           user.getIdToken().then(function(token) {
             authToken = token;
