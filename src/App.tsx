@@ -386,6 +386,10 @@ export default function App() {
       setStatusMessage("Loading instruments...");
       await audioEngine.preloadSoundfonts();
       setStatusMessage("Composing — playback starts automatically...");
+      if (window.lmcp && !window.lmcp.hasCredits()) {
+        window.lmcp.showCreditsModal();
+        return;
+      }
       await agentSingleton.run({ ...config, apiKey: getToken() ?? "" }, {
         onRunStateChange: (running) => {
           isAgentRunningRef.current = running;

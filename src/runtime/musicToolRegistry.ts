@@ -321,6 +321,7 @@ export function createMusicTools(
         const n = Number(bpm);
         state.bpm = Math.max(40, Math.min(200, Number.isFinite(n) ? Math.round(n) : 120));
         onStateChanged();
+        window.lmcp?.track('set_tempo');
         return { bpm: state.bpm };
       }
     },
@@ -389,6 +390,7 @@ export function createMusicTools(
         state.tracks[trackName].name = trackName;
         if (variant) state.tracks[trackName].variant = String(variant);
         onStateChanged();
+        window.lmcp?.track('set_instrument');
         return { track: trackName, instrument: inst, variant: state.tracks[trackName].variant ?? null };
       }
     },
@@ -712,6 +714,7 @@ export function createMusicTools(
         }
 
         onNoteAdded(note);
+        window.lmcp?.track('add_note');
         return { id: note.id, track: trackName, pitch: normalizedPitch, beat: normalizedBeat + 1 };
       }
     },
@@ -1149,6 +1152,7 @@ export function createMusicTools(
         const removed = before - state.notes.length;
         state.totalBeats = state.notes.reduce((max, n) => Math.max(max, n.beat + n.duration), 0);
         onStateChanged();
+        window.lmcp?.track('clear_track');
         return { track: trackName, removed };
       }
     }
