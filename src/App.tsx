@@ -270,6 +270,7 @@ export default function App() {
       capture_pageview: true,
       capture_pageleave: true,
     });
+    posthog.capture("demo_page_viewed", { demo_source: "music.leanmcp.live" });
 
 
     const shareParam = readShareParam();
